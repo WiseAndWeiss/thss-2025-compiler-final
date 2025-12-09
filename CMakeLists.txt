@@ -3,6 +3,9 @@ project(compiler LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 
+# Disable ANTLR4 tests to avoid downloading googletest twice or failing
+set(ANTLR_BUILD_CPP_TESTS OFF CACHE BOOL "" FORCE)
+
 # Include antlr4 runtime
 add_subdirectory(third_party/antlr4-runtime)
 
@@ -25,28 +28,37 @@ add_executable(compiler ${SRC_FILES})
 target_link_libraries(compiler antlr4_shared)
 
 # Set up Google Test
-include(FetchContent)
-FetchContent_Declare(
-  googletest
-  URL https://github.com/google/googletest/archive/03597a01ee50ed33e9fd716149c63099179ad6c5.zip
-)
+# include(FetchContent)
+# FetchContent_Declare(
+#   googletest
+#   URL https://gh-proxy.com/https://github.com/google/googletest/archive/03597a01ee50ed33e9fd716149c63099179ad6c5.zip
+# )
 
 # For Windows: Prevent overriding the parent project's compiler/linker settings
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googletest)
+# FetchContent_MakeAvailable(googletest)
+
+# Use local googletest
+add_subdirectory(third_party/googletest)
 
 # Add test executable
 enable_testing()
 
+# Filter out main.cpp for testing
+list(FILTER SRC_FILES EXCLUDE REGEX "src/main.cpp")
+
+message(STATUS "Source files for unit_tests: ${SRC_FILES}")
+
 add_executable(
   unit_tests
-  # Link your test executable to the gtest/gtest_main library
+  ${CMAKE_CURRENT_SOURCE_DIR}/test/unit_test.cpp
+  ${SRC_FILES}
 )
 
 target_link_libraries(
   unit_tests
   gtest_main
-  # Link any libraries your tests need
+  antlr4_shared
 )
 
 include(GoogleTest)
