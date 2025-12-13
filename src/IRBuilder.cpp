@@ -31,10 +31,11 @@ Value* IRBuilder::createAlloca(std::shared_ptr<Type> type, const std::string& na
     // 生成 alloca 指令
     // e.g: %name = alloca i32, align 4
     // 含义：在栈上分配一个i32类型的变量
+    std::string actualName = name.empty() ? "temp" : name;
     std::stringstream ss;
-    ss << "%" << (name.empty() ? "temp" : name) << " = alloca " << type->toString() << ", align 4";
+    ss << "%" << actualName << " = alloca " << type->toString() << ", align 4";
     addInstruction(ss.str());
-    return new Value(name, type);
+    return new Value(actualName, type);
 }
 
 Value* IRBuilder::createStore(Value* value, Value* ptr) {
@@ -55,11 +56,12 @@ Value* IRBuilder::createLoad(Value* ptr, const std::string& name) {
     auto ptrType = std::dynamic_pointer_cast<PointerType>(ptr->getType());
     std::shared_ptr<Type> loadedType = ptrType ? ptrType->getPointedType() : TypeFactory::getIntType();
 
+    std::string actualName = name.empty() ? "load_temp" : name;
     std::stringstream ss;
-    ss << "%" << (name.empty() ? "load_temp" : name) << " = load " 
+    ss << "%" << actualName << " = load " 
        << loadedType->toString() << ", " << ptr->getType()->toString() << "* " << formatValue(ptr) << ", align 4";
     addInstruction(ss.str());
-    return new Value(name, loadedType);
+    return new Value(actualName, loadedType);
 }
 
 // 算术运算
@@ -67,121 +69,132 @@ Value* IRBuilder::createAdd(Value* lhs, Value* rhs, const std::string& name) {
     // 生成 add 指令
     // e.g: %name = add i32 %lhs, %rhs
     // 含义：计算 lhs + rhs 的值
+    std::string actualName = name.empty() ? "add_temp" : name;
     std::stringstream ss;
-    ss << "%" << (name.empty() ? "add_temp" : name) << " = add " 
+    ss << "%" << actualName << " = add " 
        << lhs->getType()->toString() << " " << formatValue(lhs) << ", " << formatValue(rhs);
     addInstruction(ss.str());
-    return new Value(name, lhs->getType());
+    return new Value(actualName, lhs->getType());
 }
 
 Value* IRBuilder::createSub(Value* lhs, Value* rhs, const std::string& name) {
     // 生成 sub 指令
     // e.g: %name = sub i32 %lhs, %rhs
     // 含义：计算 lhs - rhs 的值
+    std::string actualName = name.empty() ? "sub_temp" : name;
     std::stringstream ss;
-    ss << "%" << (name.empty() ? "sub_temp" : name) << " = sub " 
+    ss << "%" << actualName << " = sub " 
        << lhs->getType()->toString() << " " << formatValue(lhs) << ", " << formatValue(rhs);
     addInstruction(ss.str());
-    return new Value(name, lhs->getType());
+    return new Value(actualName, lhs->getType());
 }
 
 Value* IRBuilder::createMul(Value* lhs, Value* rhs, const std::string& name) {
     // 生成 mul 指令
     // e.g: %name = mul i32 %lhs, %rhs
     // 含义：计算 lhs * rhs 的值
+    std::string actualName = name.empty() ? "mul_temp" : name;
     std::stringstream ss;
-    ss << "%" << (name.empty() ? "mul_temp" : name) << " = mul " 
+    ss << "%" << actualName << " = mul " 
        << lhs->getType()->toString() << " " << formatValue(lhs) << ", " << formatValue(rhs);
     addInstruction(ss.str());
-    return new Value(name, lhs->getType());
+    return new Value(actualName, lhs->getType());
 }
 
 Value* IRBuilder::createSDiv(Value* lhs, Value* rhs, const std::string& name) {
     // 生成 sdiv 指令
     // e.g: %name = sdiv i32 %lhs, %rhs
     // 含义：计算 lhs / rhs 的值（有符号除法）
+    std::string actualName = name.empty() ? "sdiv_temp" : name;
     std::stringstream ss;
-    ss << "%" << (name.empty() ? "sdiv_temp" : name) << " = sdiv " 
+    ss << "%" << actualName << " = sdiv " 
        << lhs->getType()->toString() << " " << formatValue(lhs) << ", " << formatValue(rhs);
     addInstruction(ss.str());
-    return new Value(name, lhs->getType());
+    return new Value(actualName, lhs->getType());
 }
 
 Value* IRBuilder::createSRem(Value* lhs, Value* rhs, const std::string& name) {
     // 生成 srem 指令
     // e.g: %name = srem i32 %lhs, %rhs
     // 含义：计算 lhs % rhs 的值（有符号取模）
+    std::string actualName = name.empty() ? "srem_temp" : name;
     std::stringstream ss;
-    ss << "%" << (name.empty() ? "srem_temp" : name) << " = srem " 
+    ss << "%" << actualName << " = srem " 
        << lhs->getType()->toString() << " " << formatValue(lhs) << ", " << formatValue(rhs);
     addInstruction(ss.str());
-    return new Value(name, lhs->getType());
+    return new Value(actualName, lhs->getType());
 }
 
 Value* IRBuilder::createICmpEQ(Value* lhs, Value* rhs, const std::string& name) {
     // 生成 icmp eq 指令
     // e.g: %name = icmp eq i32 %lhs, %rhs
     // 含义：比较 lhs 和 rhs 是否相等
+    std::string actualName = name.empty() ? "icmp_eq_temp" : name;
     std::stringstream ss;
-    ss << "%" << (name.empty() ? "icmp_eq_temp" : name) << " = icmp eq " 
+    ss << "%" << actualName << " = icmp eq " 
        << lhs->getType()->toString() << " " << formatValue(lhs) << ", " << formatValue(rhs);
     addInstruction(ss.str());
-    return new Value(name, TypeFactory::getIntType()); 
+    return new Value(actualName, TypeFactory::getIntType()); 
 }
 
 Value* IRBuilder::createICmpNE(Value* lhs, Value* rhs, const std::string& name) {
     // 生成 icmp ne 指令
     // e.g: %name = icmp ne i32 %lhs, %rhs
     // 含义：比较 lhs 和 rhs 是否不等
+    std::string actualName = name.empty() ? "icmp_ne_temp" : name;
     std::stringstream ss;
-    ss << "%" << (name.empty() ? "icmp_ne_temp" : name) << " = icmp ne " 
+    ss << "%" << actualName << " = icmp ne " 
        << lhs->getType()->toString() << " " << formatValue(lhs) << ", " << formatValue(rhs);
     addInstruction(ss.str());
-    return new Value(name, TypeFactory::getIntType()); 
+    return new Value(actualName, TypeFactory::getIntType()); 
 }
 
 Value* IRBuilder::createICmpSLT(Value* lhs, Value* rhs, const std::string& name) {
     // 生成 icmp slt 指令
     // e.g: %name = icmp slt i32 %lhs, %rhs
     // 含义：比较 lhs 是否小于 rhs（有符号）
+    std::string actualName = name.empty() ? "icmp_slt_temp" : name;
     std::stringstream ss;
-    ss << "%" << (name.empty() ? "icmp_slt_temp" : name) << " = icmp slt " 
+    ss << "%" << actualName << " = icmp slt " 
        << lhs->getType()->toString() << " " << formatValue(lhs) << ", " << formatValue(rhs);
     addInstruction(ss.str());
-    return new Value(name, TypeFactory::getIntType()); 
+    return new Value(actualName, TypeFactory::getIntType()); 
 }
 
 Value* IRBuilder::createICmpSLE(Value* lhs, Value* rhs, const std::string& name) {
     // 生成 icmp sle 指令
     // e.g: %name = icmp sle i32 %lhs, %rhs
     // 含义：比较 lhs 是否小于等于 rhs（有符号）
+    std::string actualName = name.empty() ? "icmp_sle_temp" : name;
     std::stringstream ss;
-    ss << "%" << (name.empty() ? "icmp_sle_temp" : name) << " = icmp sle " 
+    ss << "%" << actualName << " = icmp sle " 
        << lhs->getType()->toString() << " " << formatValue(lhs) << ", " << formatValue(rhs);
     addInstruction(ss.str());
-    return new Value(name, TypeFactory::getIntType()); 
+    return new Value(actualName, TypeFactory::getIntType()); 
 }
 
 Value* IRBuilder::createICmpSGT(Value* lhs, Value* rhs, const std::string& name) {
     // 生成 icmp sgt 指令
     // e.g: %name = icmp sgt i32 %lhs, %rhs
     // 含义：比较 lhs 是否大于 rhs（有符号）
+    std::string actualName = name.empty() ? "icmp_sgt_temp" : name;
     std::stringstream ss;
-    ss << "%" << (name.empty() ? "icmp_sgt_temp" : name) << " = icmp sgt " 
+    ss << "%" << actualName << " = icmp sgt " 
        << lhs->getType()->toString() << " " << formatValue(lhs) << ", " << formatValue(rhs);
     addInstruction(ss.str());
-    return new Value(name, TypeFactory::getIntType()); 
+    return new Value(actualName, TypeFactory::getIntType()); 
 }
 
 Value* IRBuilder::createICmpSGE(Value* lhs, Value* rhs, const std::string& name) {
     // 生成 icmp sge 指令
     // e.g: %name = icmp sge i32 %lhs, %rhs
     // 含义：比较 lhs 是否大于等于 rhs（有符号）
+    std::string actualName = name.empty() ? "icmp_sge_temp" : name;
     std::stringstream ss;
-    ss << "%" << (name.empty() ? "icmp_sge_temp" : name) << " = icmp sge " 
+    ss << "%" << actualName << " = icmp sge " 
        << lhs->getType()->toString() << " " << formatValue(lhs) << ", " << formatValue(rhs);
     addInstruction(ss.str());
-    return new Value(name, TypeFactory::getIntType()); 
+    return new Value(actualName, TypeFactory::getIntType()); 
 }
 
 void IRBuilder::createBr(BasicBlock* target) {
@@ -206,8 +219,9 @@ Value* IRBuilder::createCall(Function* callee, const std::vector<Value*>& args, 
     // 生成 call 指令
     // e.g: %name = call i32 @callee(i32 %arg1, i32 %arg2)
     // 含义：调用函数 callee 并传递参数 args
+    std::string actualName = name.empty() ? "call_temp" : name;
     std::stringstream ss;
-    ss << "%" << (name.empty() ? "call_temp" : name) << " = call " 
+    ss << "%" << actualName << " = call " 
        << std::static_pointer_cast<FunctionType>(callee->getType())->getReturnType()->toString()
        << " @" << callee->getName() << "(";
     for (size_t i = 0; i < args.size(); ++i) {
@@ -216,7 +230,7 @@ Value* IRBuilder::createCall(Function* callee, const std::vector<Value*>& args, 
     }
     ss << ")";
     addInstruction(ss.str());
-    return new Value(name, std::static_pointer_cast<FunctionType>(callee->getType())->getReturnType());
+    return new Value(actualName, std::static_pointer_cast<FunctionType>(callee->getType())->getReturnType());
 }
 
 void IRBuilder::createRet(Value* retValue) {
