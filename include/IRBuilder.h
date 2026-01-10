@@ -22,10 +22,11 @@ private:
     BasicBlock* currentBB;
     Function* currentFunc;
     std::string indent;  // 用于格式化输出
+    int tempCounter;     // 用于生成唯一的临时变量名
     
 public:
     IRBuilder(Module* mod = nullptr) 
-        : module(mod), currentBB(nullptr), currentFunc(nullptr), indent("    ") {}
+        : module(mod), currentBB(nullptr), currentFunc(nullptr), indent("    "), tempCounter(0) {}
     
     // 设置当前插入点
     void setInsertPoint(BasicBlock* bb) { currentBB = bb; }
@@ -42,6 +43,11 @@ public:
     Value* createAlloca(std::shared_ptr<Type> type, const std::string& name = "");
     Value* createLoad(Value* ptr, const std::string& name = "");
     Value* createStore(Value* value, Value* ptr);
+    Value* createGEP(Value* ptr, const std::vector<Value*>& indices, const std::string& name = "");
+    
+    // 全局变量操作
+    Value* createGlobalVariable(const std::string& name, std::shared_ptr<Type> type, 
+                                Value* initializer = nullptr, bool isConst = false);
     
     // 算术运算指令
     Value* createAdd(Value* lhs, Value* rhs, const std::string& name = "");
@@ -79,4 +85,7 @@ public:
             indent = indent.substr(0, indent.length() - 4); 
     }
     void addInstruction(const std::string& instruction);
+    
+    // 生成唯一的临时变量名
+    std::string generateTempName(const std::string& prefix = "temp");
 };

@@ -16,9 +16,18 @@ protected:
     IRBuilder* builder;
     SymbolTable* symbolTable;
     
+    // 循环信息结构体（用于 break/continue）
+    struct LoopInfo {
+        BasicBlock* condBB;   // 条件检查基本块
+        BasicBlock* bodyBB;  // 循环体基本块
+        BasicBlock* nextBB;  // 循环后基本块
+    };
+    std::vector<LoopInfo> loopStack;  // 循环栈，用于嵌套循环
+    int ifCounter;  // if-else 语句计数器，用于生成唯一的基本块名称
+    
 public:
     SysYVisitor(LLVMContext* ctx) : context(ctx), 
-        builder(ctx->getBuilder()), symbolTable(ctx->getSymbolTable()) {}
+        builder(ctx->getBuilder()), symbolTable(ctx->getSymbolTable()), ifCounter(0) {}
     
     // 重写关键visit方法
     std::any visitCompUnit(SysYParser::CompUnitContext *ctx) override;
@@ -56,4 +65,28 @@ public:
     // 工具方法
     std::shared_ptr<Type> getTypeFromString(const std::string& typeStr);
     int evaluateConstExp(SysYParser::ConstExpContext *ctx);
+    int evaluateAddExp(SysYParser::AddExpContext *ctx);
+    int evaluateMulExp(SysYParser::MulExpContext *ctx);
+    int evaluateUnaryExp(SysYParser::UnaryExpContext *ctx);
+    int evaluatePrimaryExp(SysYParser::PrimaryExpContext *ctx);
+    int evaluateExp(SysYParser::ExpContext *ctx);
+    int evaluateNumber(SysYParser::NumberContext *ctx);
+    
+    // 数组初始化辅助函数
+    void initializeArray(Value* arrayPtr, std::shared_ptr<Type> arrayType, 
+                        SysYParser::InitValContext* initValCtx, 
+                        const std::vector<uint64_t>& dimensions, int& linearIndex);
+    void initializeArrayConst(Value* arrayPtr, std::shared_ptr<Type> arrayType, 
+                            SysYParser::ConstInitValContext* constInitValCtx, 
+                            const std::vector<uint64_t>& dimensions, int& linearIndex);
+    
+    // 全局常量数组初始化辅助函数
+    std::string generateGlobalArrayInitializer(SysYParser::ConstInitValContext* constInitValCtx, 
+                                               const std::vector<uint64_t>& dimensions);
+    void evaluateConstInitValToList(SysYParser::ConstInitValContext* constInitValCtx,
+                                    const std::vector<uint64_t>& dimensions,
+                                    std::vector<int>& values, int& linearIndex);
+    
+    // 初始化外部库函数
+    void initializeExternalFunctions();
 };

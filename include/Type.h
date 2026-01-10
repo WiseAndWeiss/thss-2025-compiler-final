@@ -7,6 +7,7 @@
 // Forward declarations
 class Type;
 class IntType;
+class Int1Type;
 class VoidType;
 class ArrayType;
 class PointerType;
@@ -17,6 +18,7 @@ class Type {
 public:
     enum TypeID {
         IntTypeID,
+        Int1TypeID,
         VoidTypeID,
         ArrayTypeID,
         FunctionTypeID,
@@ -48,6 +50,22 @@ public:
     
 private:
     IntType() : Type(IntTypeID) {}
+};
+
+// Int1Type Class (布尔类型)
+class Int1Type : public Type {
+public:
+    static std::shared_ptr<Int1Type> getInstance() {
+        static std::shared_ptr<Int1Type> instance(new Int1Type());
+        return instance;
+    }
+    
+    std::string toString() const override {
+        return "i1";  // LLVM IR中的1位整数（布尔类型）
+    }
+    
+private:
+    Int1Type() : Type(Int1TypeID) {}
 };
 
 // VoidType Class
@@ -143,6 +161,7 @@ class TypeFactory {
 public:
     // 基本类型获取
     static std::shared_ptr<IntType> getIntType() { return IntType::getInstance(); }
+    static std::shared_ptr<Int1Type> getInt1Type() { return Int1Type::getInstance(); }
     static std::shared_ptr<VoidType> getVoidType() { return VoidType::getInstance(); }
     
     // 数组类型创建
@@ -167,6 +186,7 @@ public:
         
         switch (type1->getTypeID()) {
             case Type::IntTypeID:
+            case Type::Int1TypeID:
             case Type::VoidTypeID:
                 return true;
                 

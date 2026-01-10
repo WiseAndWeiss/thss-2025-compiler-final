@@ -17,7 +17,7 @@ void SymbolTable::leaveScope() {
 }
 
 bool SymbolTable::addSymbol(const std::string& name, std::shared_ptr<Type> type, Value* value, 
-               bool isConst, bool isGlobal) {
+               bool isConst, bool isGlobal, int constValue) {
     if (scopes.empty()) return false;
     
     auto& currentScope = scopes.back();
@@ -25,7 +25,7 @@ bool SymbolTable::addSymbol(const std::string& name, std::shared_ptr<Type> type,
         return false; // 符号已存在
     }
     
-    currentScope[name] = new SymbolEntry(name, type, value, isConst, isGlobal);
+    currentScope[name] = new SymbolEntry(name, type, value, isConst, isGlobal, constValue);
     return true;
 }
 

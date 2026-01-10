@@ -4,9 +4,14 @@
 #include "Value.h"
 #include <iostream>
 #include <vector>
+#include <numeric>
+#include <functional>
 
 // compUnit : (decl | funcDef)*;
 std::any SysYVisitor::visitCompUnit(SysYParser::CompUnitContext *ctx) {
+    // 初始化外部库函数
+    initializeExternalFunctions();
+    
     for (auto child : ctx->children) {
         child->accept(this);
     }
@@ -32,50 +37,79 @@ std::any SysYVisitor::visitConstDecl(SysYParser::ConstDeclContext *ctx) {
     return nullptr;
 }
 
-// bType : 'int';
+// bType : INT;
 std::any SysYVisitor::visitBType(SysYParser::BTypeContext *ctx) {
-    return ctx->getText();
+    // bType 只是类型标记，不需要生成代码
+    return nullptr;
 }
 
 // constDef : IDENT ('[' constExp ']' )* '=' constInitVal;
 std::any SysYVisitor::visitConstDef(SysYParser::ConstDefContext *ctx) {
     std::string name = ctx->IDENT()->getText();
+    bool isGlobal = (builder->getCurrentFunction() == nullptr);
     
     if (!ctx->constExp().empty()) {
-        // TODO: 处理数组定义
+        // 处理数组定义
         // 1. 计算数组维度
-        // 2. 分配数组空间
-        // 3. 加入符号表
-        // 4. 处理数组初始化
-    } else {
-        // 标量处理
-        Value* alloca = builder->createAlloca(TypeFactory::getIntType(), name);
-        symbolTable->addSymbol(name, TypeFactory::getIntType(), alloca, true, false);
+        std::vector<uint64_t> dimensions;
+        for (auto constExpCtx : ctx->constExp()) {
+            int dim = evaluateConstExp(constExpCtx);
+            dimensions.push_back(dim);
+        }
         
-        if (ctx->constInitVal()) {
-            // TODO: 计算常量表达式的值 (evaluateConstExp)
-            // 目前暂时简化处理，假设已经有了值
-            // int val = evaluateConstExp(ctx->constInitVal()->constExp());
-            // builder->createStore(builder->getInt32(val), alloca);
-        } 
-    }
-    return nullptr;
-}
-
-// constInitVal : constExp | '{' (constInitVal (',' constInitVal)*)? '}';
-std::any SysYVisitor::visitConstInitVal(SysYParser::ConstInitValContext *ctx) {
-    if (ctx->constExp()) {
-        return visitConstExp(ctx->constExp());
+        // 2. 创建数组类型（从内到外）
+        std::shared_ptr<Type> elementType = TypeFactory::getIntType();
+        for (auto it = dimensions.rbegin(); it != dimensions.rend(); ++it) {
+            elementType = TypeFactory::getArrayType(elementType, *it);
+        }
+        
+        // 3. 分配数组空间
+        if (isGlobal) {
+            // 全局常量数组
+            Value* initValue = nullptr;
+            if (ctx->constInitVal()) {
+                std::string initStr = generateGlobalArrayInitializer(ctx->constInitVal(), dimensions);
+                // 创建一个特殊的 Value 来存储初始化器字符串
+                initValue = new Value(initStr, elementType);
+            }
+            Value* gvar = builder->createGlobalVariable(name, elementType, initValue, true);
+            auto ptrType = TypeFactory::getPointerType(elementType);
+            symbolTable->addSymbol(name, ptrType, gvar, true, true, 0);
+        } else {
+            // 局部数组
+            Value* alloca = builder->createAlloca(elementType, name);
+            auto ptrType = TypeFactory::getPointerType(elementType);
+            symbolTable->addSymbol(name, ptrType, alloca, true, false, 0);
+            
+            // 处理局部数组初始化
+            if (ctx->constInitVal()) {
+                int linearIndex = 0;
+                initializeArrayConst(alloca, elementType, ctx->constInitVal(), dimensions, linearIndex);
+            }
+        }
     } else {
-        // TODO: 处理数组初始化列表 '{' ... '}'
-        return nullptr;
-    }
-}
-
-// varDecl : bType varDef (',' varDef)* ';';
-std::any SysYVisitor::visitVarDecl(SysYParser::VarDeclContext *ctx) {
-    for (auto varDef : ctx->varDef()) {
-        varDef->accept(this);
+        // 标量常量处理
+        int constVal = 0;
+        if (ctx->constInitVal() && ctx->constInitVal()->constExp()) {
+            constVal = evaluateConstExp(ctx->constInitVal()->constExp());
+        }
+        
+        Value* initValue = builder->getInt32(constVal);
+        
+        if (isGlobal) {
+            // 全局常量
+            Value* gvar = builder->createGlobalVariable(name, TypeFactory::getIntType(), initValue, true);
+            // 全局变量的类型是指针类型
+            auto ptrType = TypeFactory::getPointerType(TypeFactory::getIntType());
+            symbolTable->addSymbol(name, ptrType, gvar, true, true, constVal);
+        } else {
+            // 局部常量
+            Value* alloca = builder->createAlloca(TypeFactory::getIntType(), name);
+            // alloca 返回的是指针类型
+            auto ptrType = TypeFactory::getPointerType(TypeFactory::getIntType());
+            symbolTable->addSymbol(name, ptrType, alloca, true, false, constVal);
+            builder->createStore(initValue, alloca);
+        }
     }
     return nullptr;
 }
@@ -83,24 +117,86 @@ std::any SysYVisitor::visitVarDecl(SysYParser::VarDeclContext *ctx) {
 // varDef : IDENT ('[' constExp ']' )* ( '=' initVal )?;
 std::any SysYVisitor::visitVarDef(SysYParser::VarDefContext *ctx) {
     std::string name = ctx->IDENT()->getText();
+    bool isGlobal = (builder->getCurrentFunction() == nullptr);
     
     if (!ctx->constExp().empty()) {
-        // TODO: 处理数组定义
+        // 处理数组定义
         // 1. 计算数组维度
-        // 2. 分配数组空间
-        // 3. 加入符号表
-        // 4. 处理数组初始化
+        std::vector<uint64_t> dimensions;
+        for (auto constExpCtx : ctx->constExp()) {
+            int dim = evaluateConstExp(constExpCtx);
+            dimensions.push_back(dim);
+        }
+        
+        // 2. 创建数组类型（从内到外）
+        std::shared_ptr<Type> elementType = TypeFactory::getIntType();
+        for (auto it = dimensions.rbegin(); it != dimensions.rend(); ++it) {
+            elementType = TypeFactory::getArrayType(elementType, *it);
+        }
+        
+        // 3. 分配数组空间
+        if (isGlobal) {
+            // 全局数组
+            Value* gvar = builder->createGlobalVariable(name, elementType, nullptr, false);
+            auto ptrType = TypeFactory::getPointerType(elementType);
+            symbolTable->addSymbol(name, ptrType, gvar, false, true, 0);
+            
+            // TODO: 处理全局数组初始化
+        } else {
+            // 局部数组
+            Value* alloca = builder->createAlloca(elementType, name);
+            auto ptrType = TypeFactory::getPointerType(elementType);
+            symbolTable->addSymbol(name, ptrType, alloca, false, false, 0);
+            
+            // 处理局部数组初始化
+            if (ctx->ASSIGN() && ctx->initVal()) {
+                int linearIndex = 0;
+                initializeArray(alloca, elementType, ctx->initVal(), dimensions, linearIndex);
+            }
+        }
     } else {
-        // 1. 在栈上分配空间
-        Value* alloca = builder->createAlloca(TypeFactory::getIntType(), name);
-        
-        // 2. 将变量加入符号表
-        symbolTable->addSymbol(name, TypeFactory::getIntType(), alloca, false, false);
-        
-        // 3. 处理初始化
-        if (ctx->ASSIGN()) {
-            Value* initVal = std::any_cast<Value*>(visitInitVal(ctx->initVal()));
-            builder->createStore(initVal, alloca);
+        // 标量变量处理
+        if (isGlobal) {
+            // 全局变量
+            Value* initValue = nullptr;
+            if (ctx->ASSIGN() && ctx->initVal()) {
+                // 全局变量初始化必须是常量表达式
+                if (ctx->initVal()->exp()) {
+                    // 尝试评估 exp（如果它是常量表达式）
+                    // 注意：这里假设 exp 是常量表达式，实际应该进行类型检查
+                    try {
+                        int constVal = evaluateExp(ctx->initVal()->exp());
+                        initValue = builder->getInt32(constVal);
+                    } catch (...) {
+                        // 如果不是常量表达式，初始化为0
+                        initValue = builder->getInt32(0);
+                    }
+                } else {
+                    // 如果不是常量表达式，初始化为0
+                    initValue = builder->getInt32(0);
+                }
+            } else {
+                initValue = builder->getInt32(0);
+            }
+            
+            Value* gvar = builder->createGlobalVariable(name, TypeFactory::getIntType(), initValue, false);
+            // 全局变量的类型是指针类型
+            auto ptrType = TypeFactory::getPointerType(TypeFactory::getIntType());
+            symbolTable->addSymbol(name, ptrType, gvar, false, true, 0);
+        } else {
+            // 局部变量
+            Value* alloca = builder->createAlloca(TypeFactory::getIntType(), name);
+            // alloca 返回的是指针类型
+            auto ptrType = TypeFactory::getPointerType(TypeFactory::getIntType());
+            symbolTable->addSymbol(name, ptrType, alloca, false, false, 0);
+            
+            // 处理初始化
+            if (ctx->ASSIGN() && ctx->initVal()) {
+                Value* initVal = std::any_cast<Value*>(visitInitVal(ctx->initVal()));
+                if (initVal) {
+                    builder->createStore(initVal, alloca);
+                }
+            }
         }
     }
     
@@ -112,9 +208,28 @@ std::any SysYVisitor::visitInitVal(SysYParser::InitValContext *ctx) {
     if (ctx->exp()) {
         return visitExp(ctx->exp());
     } else {
-        // TODO: 处理数组初始化列表 '{' ... '}'
+        // 数组初始化列表在 initializeArray 中处理
         return nullptr;
     }
+}
+
+// constInitVal : constExp | '{' (constInitVal (',' constInitVal)*)? '}';
+std::any SysYVisitor::visitConstInitVal(SysYParser::ConstInitValContext *ctx) {
+    if (ctx->constExp()) {
+        // 标量常量表达式，在 visitConstDef 中处理
+        return nullptr;
+    } else {
+        // 数组初始化列表在 initializeArrayConst 中处理
+        return nullptr;
+    }
+}
+
+// varDecl : bType varDef (',' varDef)* ';';
+std::any SysYVisitor::visitVarDecl(SysYParser::VarDeclContext *ctx) {
+    for (auto varDef : ctx->varDef()) {
+        varDef->accept(this);
+    }
+    return nullptr;
 }
 
 // funcDef : funcType IDENT '(' (funcFParams)? ')' block;
@@ -138,6 +253,9 @@ std::any SysYVisitor::visitFuncDef(SysYParser::FuncDefContext *ctx) {
     Function* function = new Function(funcName, funcType);
     context->getModule()->addFunction(function);
     
+    // 将函数添加到符号表（全局作用域）
+    symbolTable->addSymbol(funcName, funcType, function, false, true, 0);
+    
     builder->setCurrentFunction(function);
     BasicBlock* entryBB = new BasicBlock("entry");
     function->addBasicBlock(entryBB);
@@ -145,30 +263,36 @@ std::any SysYVisitor::visitFuncDef(SysYParser::FuncDefContext *ctx) {
     
     symbolTable->enterScope();
     
-    // 处理参数声明：将参数添加到符号表
-    auto args = function->getArguments();
-    for (size_t i = 0; i < args.size(); ++i) {
-        Value* arg = args[i];
-        Value* alloca = builder->createAlloca(paramTypes[i], paramNames[i]);
+    // 创建函数参数并添加到函数参数列表
+    auto& args = function->getArguments();
+    for (size_t i = 0; i < paramTypes.size(); ++i) {
+        // 创建参数 Value（参数名称为 paramNames[i]，类型为值类型，如 i32）
+        // 在 LLVM IR 中，函数参数是值类型，不是指针类型
+        Value* arg = new Value(paramNames[i], paramTypes[i]);
+        args.push_back(arg);
+        
+        // 为参数分配栈空间（使用不同的名称避免与参数名冲突）
+        // 在 LLVM IR 中，函数参数和局部变量不能同名
+        std::string localVarName = paramNames[i] + "_local";
+        Value* alloca = builder->createAlloca(paramTypes[i], localVarName);
+        // 将参数值存储到局部变量中
         builder->createStore(arg, alloca);
-        symbolTable->addSymbol(paramNames[i], paramTypes[i], alloca, false, false);
+        // alloca 返回的是指针类型，将其添加到符号表（使用参数名作为符号名）
+        auto ptrType = TypeFactory::getPointerType(paramTypes[i]);
+        symbolTable->addSymbol(paramNames[i], ptrType, alloca, false, false, 0);
     }
     
     visitBlock(ctx->block());
     
     // 确保基本块有终结指令
-    if (!builder->getCurrentBB()->isTerminated()) {
-        if (returnType->toString() == "void") {
-            builder->createRet(nullptr);
-        } else if (funcName == "main" && returnType->toString() == "i32") {
-            builder->createRet(builder->getInt32(0));
-        } else {
-            // TODO: 警告或错误，非void函数缺少return
-            builder->createRet(builder->getInt32(0)); // 默认返回0
-        }
+    BasicBlock* currentBB = builder->getCurrentBB();
+    if (currentBB && !currentBB->isTerminated()) {
+        builder->createRet(nullptr);
     }
     
     symbolTable->leaveScope();
+    builder->setCurrentFunction(nullptr);
+    
     return nullptr;
 }
 
@@ -181,78 +305,213 @@ std::any SysYVisitor::visitFuncType(SysYParser::FuncTypeContext *ctx) {
 std::any SysYVisitor::visitFuncFParams(SysYParser::FuncFParamsContext *ctx) {
     std::vector<std::pair<std::shared_ptr<Type>, std::string>> params;
     for (auto paramCtx : ctx->funcFParam()) {
-        params.push_back(std::any_cast<std::pair<std::shared_ptr<Type>, std::string>>(visitFuncFParam(paramCtx)));
+        auto param = std::any_cast<std::pair<std::shared_ptr<Type>, std::string>>(visitFuncFParam(paramCtx));
+        params.push_back(param);
     }
     return params;
 }
 
-// funcFParam : bType IDENT ('[' ']' )*;
+// funcFParam : bType IDENT ('[' ']')*;
 std::any SysYVisitor::visitFuncFParam(SysYParser::FuncFParamContext *ctx) {
-    std::string name = ctx->IDENT()->getText();
-    std::shared_ptr<Type> type = getTypeFromString(ctx->bType()->getText());
+    std::shared_ptr<Type> baseType = getTypeFromString(ctx->bType()->getText());
+    std::string paramName = ctx->IDENT()->getText();
     
-    // TODO: 处理数组参数 (指针类型)
-    // if (!ctx->L_BRACKT().empty()) { ... }
+    // 处理数组参数
+    // 计算数组维度（通过计算 L_BRACKT 的数量）
+    int arrayDim = 0;
+    if (ctx->L_BRACKT().size() > 0) {
+        arrayDim = ctx->L_BRACKT().size();
+    }
+    for (int i = 0; i < arrayDim; ++i) {
+        baseType = TypeFactory::getPointerType(baseType);
+    }
     
-    return std::make_pair(type, name);
+    return std::make_pair(baseType, paramName);
 }
 
 // block : '{' blockItem* '}';
 std::any SysYVisitor::visitBlock(SysYParser::BlockContext *ctx) {
-    // 块通常不开启新作用域，除非是函数体（已在funcDef处理）或显式块语句
-    // 但SysY定义中block就是语句块，通常需要新作用域
-    // 注意：funcDef中已经enterScope了，这里需要判断是否是函数体的block
-    // 简单起见，可以在visitStmt中处理block的作用域，或者在这里统一处理
-    // 如果父节点是FuncDef，则不需要enterScope（因为FuncDef已经做了）
-    // 这里假设由调用者（visitStmt或visitFuncDef）管理作用域，或者在这里判断
-    
-    for (auto item : ctx->blockItem()) {
-        item->accept(this);
+    symbolTable->enterScope();
+    for (auto blockItem : ctx->blockItem()) {
+        blockItem->accept(this);
     }
+    symbolTable->leaveScope();
     return nullptr;
 }
 
 // blockItem : decl | stmt;
 std::any SysYVisitor::visitBlockItem(SysYParser::BlockItemContext *ctx) {
-    return visitChildren(ctx);
+    if (ctx->decl()) {
+        return visitDecl(ctx->decl());
+    } else if (ctx->stmt()) {
+        return visitStmt(ctx->stmt());
+    }
+    return nullptr;
 }
 
-// stmt : lVal '=' exp ';'
-//      | block
-//      | 'if' '(' cond ')' stmt ( 'else' stmt )?
-//      | 'while' '(' cond ')' stmt
-//      | 'break' ';'
-//      | 'continue' ';'
-//      | 'return' ( exp )? ';';
+// stmt : lVal '=' exp ';' | (exp)? ';' | block | 'if' '(' cond ')' stmt ('else' stmt)? | 'while' '(' cond ')' stmt | 'break' ';' | 'continue' ';' | 'return' (exp)? ';';
 std::any SysYVisitor::visitStmt(SysYParser::StmtContext *ctx) {
-    if (ctx->ASSIGN()) {
-        // lVal '=' exp ';'
-        Value* lValAddr = std::any_cast<Value*>(visitLVal(ctx->lVal()));
+    if (ctx->ASSIGN() && ctx->lVal()) {
+        // 赋值语句
+        Value* lval = std::any_cast<Value*>(visitLVal(ctx->lVal()));
         Value* expVal = std::any_cast<Value*>(visitExp(ctx->exp()));
-        builder->createStore(expVal, lValAddr);
+        builder->createStore(expVal, lval);
     } else if (ctx->block()) {
-        symbolTable->enterScope();
         visitBlock(ctx->block());
-        symbolTable->leaveScope();
     } else if (ctx->IF()) {
-        // 'if' '(' cond ')' stmt ( 'else' stmt )?
-        // TODO: 实现If控制流
-        // 1. 创建 trueBB, falseBB, nextBB (如果有else)
-        // 2. visitCond(ctx->cond()) -> 生成比较指令和跳转
-        // 3. builder->setInsertPoint(trueBB); visitStmt(stmt1);
-        // 4. 处理 else 分支
+        // 实现 if-else 语句
+        Function* currentFunc = builder->getCurrentFunction();
+        BasicBlock* currentBB = builder->getCurrentBB();
+        
+        // 创建基本块（使用唯一计数器生成名称）
+        int currentIfId = ifCounter++;
+        BasicBlock* thenBB = new BasicBlock("if_then_" + std::to_string(currentIfId));
+        BasicBlock* elseBB = ctx->ELSE() ? new BasicBlock("if_else_" + std::to_string(currentIfId)) : nullptr;
+        BasicBlock* mergeBB = new BasicBlock("if_end_" + std::to_string(currentIfId));
+        
+        // 评估条件表达式
+        Value* condVal = nullptr;
+        try {
+            auto condResult = visitCond(ctx->cond());
+            if (condResult.has_value()) {
+                condVal = std::any_cast<Value*>(condResult);
+            }
+        } catch (const std::bad_any_cast& e) {
+            // 如果转换失败，创建一个默认的 false 值
+            condVal = builder->getInt1(false);
+        }
+        
+        if (!condVal) {
+            condVal = builder->getInt1(false);
+        }
+        
+        // 如果条件不是 i1 类型，需要转换
+        if (condVal->getType()->toString() != "i1") {
+            Value* zero = builder->getInt32(0);
+            condVal = builder->createICmpNE(condVal, zero);
+        }
+        
+        // 条件跳转
+        BasicBlock* falseBB = elseBB ? elseBB : mergeBB;
+        builder->createCondBr(condVal, thenBB, falseBB);
+        
+        // 添加 thenBB 到函数
+        currentFunc->addBasicBlock(thenBB);
+        builder->setInsertPoint(thenBB);
+        visitStmt(ctx->stmt(0));
+        
+        // 检查当前基本块是否被终止（可能在 visitStmt 中已经添加了 return 等）
+        BasicBlock* thenBBAfter = builder->getCurrentBB();
+        bool thenTerminated = thenBBAfter ? thenBBAfter->isTerminated() : false;
+        
+        // 如果 thenBB 没有终结指令，跳转到 mergeBB
+        if (!thenTerminated) {
+            builder->createBr(mergeBB);
+        }
+        
+        // 处理 else 分支
+        if (ctx->ELSE() && elseBB) {
+            currentFunc->addBasicBlock(elseBB);
+            builder->setInsertPoint(elseBB);
+            visitStmt(ctx->stmt(1));
+            
+            // 检查当前基本块是否被终止
+            BasicBlock* elseBBAfter = builder->getCurrentBB();
+            bool elseTerminated = elseBBAfter ? elseBBAfter->isTerminated() : false;
+            
+            // 如果 elseBB 没有终结指令，跳转到 mergeBB
+            if (!elseTerminated) {
+                builder->createBr(mergeBB);
+            }
+        }
+        
+        // 添加 mergeBB 到函数并设置插入点
+        // mergeBB 总是会被使用（要么从 thenBB 跳转，要么从 elseBB 跳转，要么从条件跳转使用）
+        // 即使 thenBB 和 elseBB 都有 return，mergeBB 仍然需要被添加（虽然可能永远不会被执行）
+        // 但为了确保控制流图的完整性，我们总是添加 mergeBB
+        currentFunc->addBasicBlock(mergeBB);
+        builder->setInsertPoint(mergeBB);
     } else if (ctx->WHILE()) {
-        // 'while' '(' cond ')' stmt
-        // TODO: 实现While控制流
-        // 1. 创建 condBB, bodyBB, nextBB
-        // 2. 跳转到 condBB
-        // 3. 在 condBB 中生成条件判断
-        // 4. 在 bodyBB 中生成循环体
-        // 5. 处理 break/continue 栈
+        // 实现 while 循环
+        Function* currentFunc = builder->getCurrentFunction();
+        BasicBlock* currentBB = builder->getCurrentBB();
+        
+        // 创建基本块
+        BasicBlock* condBB = new BasicBlock("while_cond_" + std::to_string(loopStack.size()));
+        BasicBlock* bodyBB = new BasicBlock("while_body_" + std::to_string(loopStack.size()));
+        BasicBlock* nextBB = new BasicBlock("while_end_" + std::to_string(loopStack.size()));
+        
+        // 将循环信息压入栈
+        LoopInfo loopInfo;
+        loopInfo.condBB = condBB;
+        loopInfo.bodyBB = bodyBB;
+        loopInfo.nextBB = nextBB;
+        loopStack.push_back(loopInfo);
+        
+        // 跳转到条件检查基本块
+        builder->createBr(condBB);
+        
+        // 添加 condBB 到函数
+        currentFunc->addBasicBlock(condBB);
+        builder->setInsertPoint(condBB);
+        
+        // 评估条件表达式
+        Value* condVal = nullptr;
+        try {
+            auto condResult = visitCond(ctx->cond());
+            if (condResult.has_value()) {
+                condVal = std::any_cast<Value*>(condResult);
+            }
+        } catch (const std::bad_any_cast& e) {
+            // 如果转换失败，创建一个默认的 false 值
+            condVal = builder->getInt1(false);
+        }
+        
+        if (!condVal) {
+            condVal = builder->getInt1(false);
+        }
+        
+        // 如果条件不是 i1 类型，需要转换
+        if (condVal->getType()->toString() != "i1") {
+            Value* zero = builder->getInt32(0);
+            condVal = builder->createICmpNE(condVal, zero);
+        }
+        
+        // 条件跳转
+        builder->createCondBr(condVal, bodyBB, nextBB);
+        
+        // 添加 bodyBB 到函数
+        currentFunc->addBasicBlock(bodyBB);
+        builder->setInsertPoint(bodyBB);
+        visitStmt(ctx->stmt(0));
+        
+        // 检查当前基本块是否被终止（可能在 visitStmt 中已经添加了 return、break 等）
+        BasicBlock* bodyBBAfter = builder->getCurrentBB();
+        bool bodyTerminated = bodyBBAfter ? bodyBBAfter->isTerminated() : false;
+        
+        // 如果当前基本块没有终结指令，跳转到 condBB（继续循环）
+        if (!bodyTerminated) {
+            builder->createBr(condBB);
+        }
+        
+        // 添加 nextBB 到函数并设置插入点
+        currentFunc->addBasicBlock(nextBB);
+        builder->setInsertPoint(nextBB);
+        
+        // 弹出循环信息
+        loopStack.pop_back();
     } else if (ctx->BREAK()) {
-        // TODO: 跳转到当前循环的 nextBB
+        // 跳转到当前循环的 nextBB
+        if (!loopStack.empty()) {
+            BasicBlock* nextBB = loopStack.back().nextBB;
+            builder->createBr(nextBB);
+        }
     } else if (ctx->CONTINUE()) {
-        // TODO: 跳转到当前循环的 condBB
+        // 跳转到当前循环的 condBB
+        if (!loopStack.empty()) {
+            BasicBlock* condBB = loopStack.back().condBB;
+            builder->createBr(condBB);
+        }
     } else if (ctx->RETURN()) {
         Value* retVal = nullptr;
         if (ctx->exp()) {
@@ -268,97 +527,139 @@ std::any SysYVisitor::visitStmt(SysYParser::StmtContext *ctx) {
 
 // exp : addExp;
 std::any SysYVisitor::visitExp(SysYParser::ExpContext *ctx) {
-    return ctx->addExp()->accept(this);
+    return visitAddExp(ctx->addExp());
 }
 
 // cond : lOrExp;
 std::any SysYVisitor::visitCond(SysYParser::CondContext *ctx) {
-    return visitChildren(ctx);
+    return visitLOrExp(ctx->lOrExp());
 }
 
-// lVal : IDENT ('[' exp ']' )*;
+// lVal : IDENT ('[' exp ']')*;
 std::any SysYVisitor::visitLVal(SysYParser::LValContext *ctx) {
     std::string name = ctx->IDENT()->getText();
     SymbolEntry* entry = symbolTable->lookup(name);
-    
     if (!entry) {
         std::cerr << "Error: Undefined variable " << name << std::endl;
         return nullptr;
     }
-
+    
+    Value* ptr = entry->value;
+    
+    // 处理数组访问
     if (!ctx->exp().empty()) {
-        // TODO: 处理数组访问 (GEP)
-        // Value* ptr = entry->value;
-        // for (auto exp : ctx->exp()) {
-        //     Value* idx = visitExp(exp);
-        //     ptr = builder->createGEP(ptr, idx);
-        // }
-        // return ptr;
-        return nullptr; 
+        // 收集所有索引（第一个0在createGEP中自动添加）
+        std::vector<Value*> indices;
+        
+        for (auto expCtx : ctx->exp()) {
+            Value* index = std::any_cast<Value*>(visitExp(expCtx));
+            indices.push_back(index);
+        }
+        
+        // 使用 GEP 计算元素地址
+        ptr = builder->createGEP(ptr, indices);
     }
     
-    // 返回变量的地址 (AllocaInst 或 GlobalVariable)
-    return entry->value;
+    return ptr;
 }
 
-// primaryExp : lVal | number | '(' exp ')';
+// primaryExp : '(' exp ')' | lVal | number;
 std::any SysYVisitor::visitPrimaryExp(SysYParser::PrimaryExpContext *ctx) {
-    if (ctx->lVal()) {
-        // 获取地址并加载
-        Value* addr = std::any_cast<Value*>(visitLVal(ctx->lVal()));
-        if (addr) {
-            return (Value*)builder->createLoad(addr);
-        }
-        return nullptr;
+    if (ctx->L_PAREN() && ctx->exp()) {
+        return visitExp(ctx->exp());
+    } else if (ctx->lVal()) {
+        Value* ptr = std::any_cast<Value*>(visitLVal(ctx->lVal()));
+        // 加载值
+        return builder->createLoad(ptr);
     } else if (ctx->number()) {
         return visitNumber(ctx->number());
-    } else if (ctx->L_PAREN()) {
-        return visitExp(ctx->exp());
     }
     return nullptr;
 }
 
 // number : INTEGER_CONST;
 std::any SysYVisitor::visitNumber(SysYParser::NumberContext *ctx) {
-    int val = 0;
     std::string text = ctx->INTEGER_CONST()->getText();
     try {
-        val = std::stoi(text, nullptr, 0);
+        int base = 10;
+        if (text.length() > 1 && text[0] == '0') {
+            if (text.length() > 2 && (text[1] == 'x' || text[1] == 'X')) {
+                base = 16;
+            } else {
+                base = 8;
+            }
+        }
+        int value = std::stoi(text, nullptr, base);
+        return builder->getInt32(value);
     } catch (...) {
-        val = 0;
+        return builder->getInt32(0);
     }
-    return (Value*)builder->getInt32(val);
 }
 
-// unaryExp : primaryExp | unaryOp unaryExp | IDENT '(' (funcRParams)? ')';
+// unaryExp : primaryExp | IDENT '(' funcRParams? ')' | unaryOp unaryExp;
 std::any SysYVisitor::visitUnaryExp(SysYParser::UnaryExpContext *ctx) {
     if (ctx->primaryExp()) {
         return visitPrimaryExp(ctx->primaryExp());
-    } else if (ctx->unaryOp()) {
-        std::string op = ctx->unaryOp()->getText();
-        Value* val = std::any_cast<Value*>(visitUnaryExp(ctx->unaryExp()));
-        
-        if (op == "+") {
-            return val;
-        } else if (op == "-") {
-            return builder->createSub(builder->getInt32(0), val);
-        } else if (op == "!") {
-            // TODO: 处理逻辑非 (icmp eq 0)
-            // return builder->createICmpEQ(val, builder->getInt32(0));
-        }
     } else if (ctx->IDENT()) {
         // 函数调用
         std::string funcName = ctx->IDENT()->getText();
-        // TODO: 查找函数定义
-        // Function* func = module->getFunction(funcName);
-        
         std::vector<Value*> args;
         if (ctx->funcRParams()) {
             args = std::any_cast<std::vector<Value*>>(visitFuncRParams(ctx->funcRParams()));
         }
         
-        // TODO: 创建Call指令
-        // return builder->createCall(func, args);
+        // 查找函数
+        SymbolEntry* entry = symbolTable->lookup(funcName);
+        if (!entry) {
+            std::cerr << "Error: Undefined function " << funcName << std::endl;
+            return nullptr;
+        }
+        
+        // 获取函数对象
+        Function* callee = dynamic_cast<Function*>(entry->value);
+        if (!callee) {
+            std::cerr << "Error: " << funcName << " is not a function" << std::endl;
+            return nullptr;
+        }
+        
+        // 生成函数调用 IR
+        Value* callResult = builder->createCall(callee, args);
+        if (callResult) {
+            return callResult;
+        } else {
+            // void 函数调用返回 nullptr，但在 SysY 中 void 函数调用不能作为表达式使用
+            // 这里不应该发生，但为了安全，返回一个 void 类型的 Value
+            return new Value("", TypeFactory::getVoidType());
+        }
+    } else if (ctx->unaryOp()) {
+        Value* operand = std::any_cast<Value*>(visitUnaryExp(ctx->unaryExp()));
+        std::string op = ctx->unaryOp()->getText();
+        
+        if (op == "+") {
+            // 如果操作数是 i1 类型，需要转换为 i32
+            if (operand->getType()->toString() == "i1") {
+                return builder->createZExt(operand, TypeFactory::getIntType());
+            }
+            return operand;
+        } else if (op == "-") {
+            // 如果操作数是 i1 类型，需要先转换为 i32
+            if (operand->getType()->toString() == "i1") {
+                operand = builder->createZExt(operand, TypeFactory::getIntType());
+            }
+            return builder->createSub(builder->getInt32(0), operand);
+        } else if (op == "!") {
+            // 实现逻辑非操作：!val = (val == 0)
+            // 如果操作数已经是 i1 类型，直接取反
+            if (operand->getType()->toString() == "i1") {
+                // 对于 i1 类型，!val = (val == 0)
+                Value* zero_i1 = builder->getInt1(false);
+                return builder->createICmpEQ(operand, zero_i1);
+            } else {
+                // 对于 i32 类型，!val = (val == 0)
+                Value* zero = builder->getInt32(0);
+                return builder->createICmpEQ(operand, zero);
+            }
+        }
     }
     return nullptr;
 }
@@ -415,13 +716,15 @@ std::any SysYVisitor::visitRelExp(SysYParser::RelExpContext *ctx) {
         Value* lhs = std::any_cast<Value*>(visitRelExp(ctx->relExp()));
         Value* rhs = std::any_cast<Value*>(visitAddExp(ctx->addExp()));
         
-        // TODO: 返回 i1 类型 (boolean)
         if (ctx->LT()) {
-            // return builder->createICmpSLT(lhs, rhs);
+            return builder->createICmpSLT(lhs, rhs);
         } else if (ctx->GT()) {
-            // return builder->createICmpSGT(lhs, rhs);
-        } 
-        // ... 其他比较符
+            return builder->createICmpSGT(lhs, rhs);
+        } else if (ctx->LE()) {
+            return builder->createICmpSLE(lhs, rhs);
+        } else if (ctx->GE()) {
+            return builder->createICmpSGE(lhs, rhs);
+        }
     }
     return visitAddExp(ctx->addExp());
 }
@@ -432,11 +735,10 @@ std::any SysYVisitor::visitEqExp(SysYParser::EqExpContext *ctx) {
         Value* lhs = std::any_cast<Value*>(visitEqExp(ctx->eqExp()));
         Value* rhs = std::any_cast<Value*>(visitRelExp(ctx->relExp()));
         
-        // TODO: 返回 i1 类型
         if (ctx->EQ()) {
-            // return builder->createICmpEQ(lhs, rhs);
+            return builder->createICmpEQ(lhs, rhs);
         } else if (ctx->NEQ()) {
-            // return builder->createICmpNE(lhs, rhs);
+            return builder->createICmpNE(lhs, rhs);
         }
     }
     return visitRelExp(ctx->relExp());
@@ -445,13 +747,31 @@ std::any SysYVisitor::visitEqExp(SysYParser::EqExpContext *ctx) {
 // lAndExp : eqExp | lAndExp '&&' eqExp;
 std::any SysYVisitor::visitLAndExp(SysYParser::LAndExpContext *ctx) {
     if (ctx->lAndExp()) {
-        // TODO: 实现短路求值
-        // 1. visitLAndExp(lhs)
-        // 2. 创建 trueBB (rhs block), falseBB (merge block)
-        // 3. condBr(lhs, trueBB, falseBB)
-        // 4. setInsertPoint(trueBB)
-        // 5. visitEqExp(rhs)
-        // 6. phi node merge result
+        // 简化实现：不实现短路求值，使用逻辑与运算
+        Value* lhs = std::any_cast<Value*>(visitLAndExp(ctx->lAndExp()));
+        Value* rhs = std::any_cast<Value*>(visitEqExp(ctx->eqExp()));
+        
+        // 如果 lhs 和 rhs 都是 i1 类型，直接使用 and 指令
+        // 否则需要转换
+        if (lhs->getType()->toString() == "i1" && rhs->getType()->toString() == "i1") {
+            // 将 i1 转换为 i32，进行逻辑与，再转换回 i1
+            Value* lhs_i32 = builder->createZExt(lhs, TypeFactory::getIntType());
+            Value* rhs_i32 = builder->createZExt(rhs, TypeFactory::getIntType());
+            Value* zero = builder->getInt32(0);
+            Value* mul_result = builder->createMul(lhs_i32, rhs_i32);
+            Value* result_ne_zero = builder->createICmpNE(mul_result, zero);
+            return result_ne_zero;
+        } else {
+            // 如果类型不匹配，先转换为 i32
+            Value* zero = builder->getInt32(0);
+            Value* lhs_ne_zero = builder->createICmpNE(lhs, zero);
+            Value* rhs_ne_zero = builder->createICmpNE(rhs, zero);
+            Value* lhs_i32 = builder->createZExt(lhs_ne_zero, TypeFactory::getIntType());
+            Value* rhs_i32 = builder->createZExt(rhs_ne_zero, TypeFactory::getIntType());
+            Value* mul_result = builder->createMul(lhs_i32, rhs_i32);
+            Value* result_ne_zero = builder->createICmpNE(mul_result, zero);
+            return result_ne_zero;
+        }
     }
     return visitEqExp(ctx->eqExp());
 }
@@ -459,7 +779,31 @@ std::any SysYVisitor::visitLAndExp(SysYParser::LAndExpContext *ctx) {
 // lOrExp : lAndExp | lOrExp '||' lAndExp;
 std::any SysYVisitor::visitLOrExp(SysYParser::LOrExpContext *ctx) {
     if (ctx->lOrExp()) {
-        // TODO: 实现短路求值
+        // 简化实现：不实现短路求值，使用逻辑或运算
+        Value* lhs = std::any_cast<Value*>(visitLOrExp(ctx->lOrExp()));
+        Value* rhs = std::any_cast<Value*>(visitLAndExp(ctx->lAndExp()));
+        
+        // 如果 lhs 和 rhs 都是 i1 类型，直接使用 or 指令
+        // 否则需要转换
+        if (lhs->getType()->toString() == "i1" && rhs->getType()->toString() == "i1") {
+            // 将 i1 转换为 i32，进行逻辑或，再转换回 i1
+            Value* lhs_i32 = builder->createZExt(lhs, TypeFactory::getIntType());
+            Value* rhs_i32 = builder->createZExt(rhs, TypeFactory::getIntType());
+            Value* zero = builder->getInt32(0);
+            Value* add_result = builder->createAdd(lhs_i32, rhs_i32);
+            Value* result_ne_zero = builder->createICmpNE(add_result, zero);
+            return result_ne_zero;
+        } else {
+            // 如果类型不匹配，先转换为 i32
+            Value* zero = builder->getInt32(0);
+            Value* lhs_ne_zero = builder->createICmpNE(lhs, zero);
+            Value* rhs_ne_zero = builder->createICmpNE(rhs, zero);
+            Value* lhs_i32 = builder->createZExt(lhs_ne_zero, TypeFactory::getIntType());
+            Value* rhs_i32 = builder->createZExt(rhs_ne_zero, TypeFactory::getIntType());
+            Value* add_result = builder->createAdd(lhs_i32, rhs_i32);
+            Value* result_ne_zero = builder->createICmpNE(add_result, zero);
+            return result_ne_zero;
+        }
     }
     return visitLAndExp(ctx->lAndExp());
 }
@@ -475,6 +819,443 @@ std::shared_ptr<Type> SysYVisitor::getTypeFromString(const std::string& typeStr)
     return TypeFactory::getIntType();
 }
 
-int SysYVisitor::evaluateConstExp(SysYParser::ConstExpContext *ctx) { 
+int SysYVisitor::evaluateConstExp(SysYParser::ConstExpContext *ctx) {
+    // constExp : addExp;
+    if (!ctx || !ctx->addExp()) {
+        return 0;
+    }
+    return evaluateAddExp(ctx->addExp());
+}
+
+int SysYVisitor::evaluateAddExp(SysYParser::AddExpContext *ctx) {
+    if (!ctx) return 0;
+    
+    if (ctx->addExp()) {
+        int lhs = evaluateAddExp(ctx->addExp());
+        int rhs = evaluateMulExp(ctx->mulExp());
+        
+        if (ctx->PLUS()) {
+            return lhs + rhs;
+        } else if (ctx->MINUS()) {
+            return lhs - rhs;
+        }
+    }
+    return evaluateMulExp(ctx->mulExp());
+}
+
+int SysYVisitor::evaluateMulExp(SysYParser::MulExpContext *ctx) {
+    if (!ctx) return 0;
+    
+    if (ctx->mulExp()) {
+        int lhs = evaluateMulExp(ctx->mulExp());
+        int rhs = evaluateUnaryExp(ctx->unaryExp());
+        
+        if (ctx->MUL()) {
+            return lhs * rhs;
+        } else if (ctx->DIV()) {
+            return rhs != 0 ? lhs / rhs : 0;
+        } else if (ctx->MOD()) {
+            return rhs != 0 ? lhs % rhs : 0;
+        }
+    }
+    return evaluateUnaryExp(ctx->unaryExp());
+}
+
+int SysYVisitor::evaluateUnaryExp(SysYParser::UnaryExpContext *ctx) {
+    if (!ctx) return 0;
+    
+    if (ctx->primaryExp()) {
+        return evaluatePrimaryExp(ctx->primaryExp());
+    } else if (ctx->unaryOp()) {
+        int val = evaluateUnaryExp(ctx->unaryExp());
+        std::string op = ctx->unaryOp()->getText();
+        
+        if (op == "+") {
+            return val;
+        } else if (op == "-") {
+            return -val;
+        } else if (op == "!") {
+            return val == 0 ? 1 : 0;
+        }
+    }
     return 0;
+}
+
+int SysYVisitor::evaluatePrimaryExp(SysYParser::PrimaryExpContext *ctx) {
+    if (!ctx) return 0;
+    
+    if (ctx->number()) {
+        return evaluateNumber(ctx->number());
+    } else if (ctx->lVal()) {
+        // 处理常量变量访问
+        std::string name = ctx->lVal()->IDENT()->getText();
+        SymbolEntry* entry = symbolTable->lookup(name);
+        if (entry && entry->isConst && ctx->lVal()->exp().empty()) {
+            // 如果是常量标量变量（没有数组索引），返回其值
+            return entry->constValue;
+        }
+        return 0;
+    } else if (ctx->L_PAREN() && ctx->exp()) {
+        return evaluateExp(ctx->exp());
+    }
+    return 0;
+}
+
+int SysYVisitor::evaluateExp(SysYParser::ExpContext *ctx) {
+    if (!ctx || !ctx->addExp()) return 0;
+    return evaluateAddExp(ctx->addExp());
+}
+
+int SysYVisitor::evaluateNumber(SysYParser::NumberContext *ctx) {
+    if (!ctx || !ctx->INTEGER_CONST()) return 0;
+    
+    std::string text = ctx->INTEGER_CONST()->getText();
+    try {
+        // 支持十进制、八进制(0开头)、十六进制(0x开头)
+        int base = 10;
+        if (text.length() > 1 && text[0] == '0') {
+            if (text.length() > 2 && (text[1] == 'x' || text[1] == 'X')) {
+                base = 16;
+            } else {
+                base = 8;
+            }
+        }
+        return std::stoi(text, nullptr, base);
+    } catch (...) {
+        return 0;
+    }
+}
+
+// 数组初始化辅助函数 - 使用线性索引
+void SysYVisitor::initializeArray(Value* arrayPtr, std::shared_ptr<Type> arrayType, 
+                                  SysYParser::InitValContext* initValCtx, 
+                                  const std::vector<uint64_t>& dimensions, int& linearIndex) {
+    if (!initValCtx) return;
+    
+    // 如果是标量表达式，直接存储到当前位置
+    if (initValCtx->exp()) {
+        Value* val = std::any_cast<Value*>(visitExp(initValCtx->exp()));
+        if (val) {
+            // 计算多维索引：对于 [4 x [2 x i32]]，需要 [i, j] 两个索引（第一个0在createGEP中自动添加）
+            std::vector<Value*> indices;
+            int tempIndex = linearIndex;
+            for (size_t i = 0; i < dimensions.size(); ++i) {
+                uint64_t stride = 1;
+                for (size_t j = i + 1; j < dimensions.size(); ++j) {
+                    stride *= dimensions[j];
+                }
+                int idx = tempIndex / stride;
+                indices.push_back(builder->getInt32(idx));
+                tempIndex %= stride;
+            }
+            Value* elemPtr = builder->createGEP(arrayPtr, indices);
+            builder->createStore(val, elemPtr);
+            linearIndex++;
+        }
+        return;
+    }
+    
+    // 处理初始化列表
+    if (initValCtx->initVal().empty()) {
+        // 空列表，不初始化（保持0值）
+        return;
+    }
+    
+    uint64_t totalElements = std::accumulate(dimensions.begin(), dimensions.end(), 1, std::multiplies<uint64_t>());
+    
+    // 处理混合初始化列表：支持扁平值和嵌套列表混合
+    for (auto initVal : initValCtx->initVal()) {
+        if (linearIndex >= totalElements) break;
+        
+        if (initVal->exp()) {
+            // 单个值：按行优先顺序填充
+            Value* val = std::any_cast<Value*>(visitExp(initVal->exp()));
+            if (val) {
+                // 计算多维索引：对于 [4 x [2 x i32]]，需要 [i, j] 两个索引（第一个0在createGEP中自动添加）
+                std::vector<Value*> indices;
+                int tempIndex = linearIndex;
+                for (size_t i = 0; i < dimensions.size(); ++i) {
+                    uint64_t stride = 1;
+                    for (size_t j = i + 1; j < dimensions.size(); ++j) {
+                        stride *= dimensions[j];
+                    }
+                    int idx = tempIndex / stride;
+                    indices.push_back(builder->getInt32(idx));
+                    tempIndex %= stride;
+                }
+                Value* elemPtr = builder->createGEP(arrayPtr, indices);
+                builder->createStore(val, elemPtr);
+                linearIndex++;
+            }
+        } else {
+            // 嵌套列表：初始化当前子数组
+            auto arrayTypePtr = std::dynamic_pointer_cast<ArrayType>(arrayType);
+            if (arrayTypePtr && dimensions.size() > 1) {
+                // 计算当前子数组的索引
+                uint64_t subArraySize = std::accumulate(dimensions.begin() + 1, dimensions.end(), 1, std::multiplies<uint64_t>());
+                int subArrayIndex = linearIndex / subArraySize;
+                
+                // 计算子数组的起始位置（第一个0在createGEP中自动添加）
+                std::vector<Value*> indices;
+                indices.push_back(builder->getInt32(subArrayIndex));
+                Value* subArrayPtr = builder->createGEP(arrayPtr, indices);
+                
+                // 递归初始化子数组
+                std::vector<uint64_t> subDimensions(dimensions.begin() + 1, dimensions.end());
+                int startLinearIndex = linearIndex;
+                int subLinearIndex = startLinearIndex % subArraySize;  // 子数组内的线性索引
+                initializeArray(subArrayPtr, arrayTypePtr->getElementType(), initVal, subDimensions, subLinearIndex);
+                // 更新 linearIndex：子数组初始化后，linearIndex 应该指向下一个子数组的开始
+                linearIndex = (subArrayIndex + 1) * subArraySize;
+            }
+        }
+    }
+}
+
+void SysYVisitor::initializeArrayConst(Value* arrayPtr, std::shared_ptr<Type> arrayType, 
+                                       SysYParser::ConstInitValContext* constInitValCtx, 
+                                       const std::vector<uint64_t>& dimensions, int& linearIndex) {
+    if (!constInitValCtx) return;
+    
+    // 如果是标量常量表达式，直接存储到当前位置
+    if (constInitValCtx->constExp()) {
+        int constVal = evaluateConstExp(constInitValCtx->constExp());
+        Value* val = builder->getInt32(constVal);
+        // 计算多维索引：对于 [4 x [2 x i32]]，需要 [i, j] 两个索引（第一个0在createGEP中自动添加）
+        std::vector<Value*> indices;
+        int tempIndex = linearIndex;
+        for (size_t i = 0; i < dimensions.size(); ++i) {
+            uint64_t stride = 1;
+            for (size_t j = i + 1; j < dimensions.size(); ++j) {
+                stride *= dimensions[j];
+            }
+            int idx = tempIndex / stride;
+            indices.push_back(builder->getInt32(idx));
+            tempIndex %= stride;
+        }
+        Value* elemPtr = builder->createGEP(arrayPtr, indices);
+        builder->createStore(val, elemPtr);
+        linearIndex++;
+        return;
+    }
+    
+    // 处理初始化列表
+    if (constInitValCtx->constInitVal().empty()) {
+        // 空列表，不初始化（保持0值）
+        return;
+    }
+    
+    uint64_t totalElements = std::accumulate(dimensions.begin(), dimensions.end(), 1, std::multiplies<uint64_t>());
+    
+    // 处理混合初始化列表：支持扁平值和嵌套列表混合
+    for (auto constInitVal : constInitValCtx->constInitVal()) {
+        if (linearIndex >= totalElements) break;
+        
+        if (constInitVal->constExp()) {
+            // 单个值：按行优先顺序填充
+            int constVal = evaluateConstExp(constInitVal->constExp());
+            Value* val = builder->getInt32(constVal);
+            // 计算多维索引：对于 [4 x [2 x i32]]，需要 [i, j] 两个索引（第一个0在createGEP中自动添加）
+            std::vector<Value*> indices;
+            int tempIndex = linearIndex;
+            for (size_t i = 0; i < dimensions.size(); ++i) {
+                uint64_t stride = 1;
+                for (size_t j = i + 1; j < dimensions.size(); ++j) {
+                    stride *= dimensions[j];
+                }
+                int idx = tempIndex / stride;
+                indices.push_back(builder->getInt32(idx));
+                tempIndex %= stride;
+            }
+            Value* elemPtr = builder->createGEP(arrayPtr, indices);
+            builder->createStore(val, elemPtr);
+            linearIndex++;
+        } else {
+            // 嵌套列表：初始化当前子数组
+            auto arrayTypePtr = std::dynamic_pointer_cast<ArrayType>(arrayType);
+            if (arrayTypePtr && dimensions.size() > 1) {
+                // 计算当前子数组的索引
+                uint64_t subArraySize = std::accumulate(dimensions.begin() + 1, dimensions.end(), 1, std::multiplies<uint64_t>());
+                int subArrayIndex = linearIndex / subArraySize;
+                
+                // 计算子数组的起始位置（第一个0在createGEP中自动添加）
+                std::vector<Value*> indices;
+                indices.push_back(builder->getInt32(subArrayIndex));
+                Value* subArrayPtr = builder->createGEP(arrayPtr, indices);
+                
+                // 递归初始化子数组
+                std::vector<uint64_t> subDimensions(dimensions.begin() + 1, dimensions.end());
+                int startLinearIndex = linearIndex;
+                int subLinearIndex = startLinearIndex % subArraySize;  // 子数组内的线性索引
+                initializeArrayConst(subArrayPtr, arrayTypePtr->getElementType(), constInitVal, subDimensions, subLinearIndex);
+                // 更新 linearIndex：子数组初始化后，linearIndex 应该指向下一个子数组的开始
+                linearIndex = (subArrayIndex + 1) * subArraySize;
+            }
+        }
+    }
+}
+
+// 生成全局常量数组初始化器字符串
+std::string SysYVisitor::generateGlobalArrayInitializer(SysYParser::ConstInitValContext* constInitValCtx, 
+                                                         const std::vector<uint64_t>& dimensions) {
+    if (!constInitValCtx) {
+        return "zeroinitializer";
+    }
+    
+    uint64_t totalElements = std::accumulate(dimensions.begin(), dimensions.end(), 1, std::multiplies<uint64_t>());
+    std::vector<int> values(totalElements, 0);
+    int linearIndex = 0;
+    
+    evaluateConstInitValToList(constInitValCtx, dimensions, values, linearIndex);
+    
+    // 生成初始化器字符串
+    if (dimensions.size() == 1) {
+        // 一维数组：[i32 0, i32 1, i32 2, ...]
+        std::string result = "[";
+        for (size_t i = 0; i < values.size(); ++i) {
+            if (i > 0) result += ", ";
+            result += "i32 " + std::to_string(values[i]);
+        }
+        result += "]";
+        return result;
+    } else {
+        // 多维数组：需要嵌套结构
+        // 例如：[2 x [2 x i32]] 的初始化器应该是 [[i32 0, i32 1], [i32 2, i32 3]]
+        std::string result = "[";
+        uint64_t subArraySize = std::accumulate(dimensions.begin() + 1, dimensions.end(), 1, std::multiplies<uint64_t>());
+        for (size_t i = 0; i < dimensions[0]; ++i) {
+            if (i > 0) result += ", ";
+            if (dimensions.size() == 2) {
+                // 二维数组：每个子数组是 [i32 x, i32 y, ...]
+                result += "[";
+                for (size_t j = 0; j < subArraySize; ++j) {
+                    if (j > 0) result += ", ";
+                    result += "i32 " + std::to_string(values[i * subArraySize + j]);
+                }
+                result += "]";
+            } else {
+                // 更高维数组：递归处理
+                std::vector<uint64_t> subDimensions(dimensions.begin() + 1, dimensions.end());
+                std::vector<int> subValues(subArraySize);
+                for (size_t j = 0; j < subArraySize; ++j) {
+                    subValues[j] = values[i * subArraySize + j];
+                }
+                // 简化处理：对于更高维数组，暂时使用扁平化表示
+                result += "[";
+                for (size_t j = 0; j < subArraySize; ++j) {
+                    if (j > 0) result += ", ";
+                    result += "i32 " + std::to_string(values[i * subArraySize + j]);
+                }
+                result += "]";
+            }
+        }
+        result += "]";
+        return result;
+    }
+}
+
+// 将常量初始化值列表转换为值数组
+void SysYVisitor::evaluateConstInitValToList(SysYParser::ConstInitValContext* constInitValCtx,
+                                              const std::vector<uint64_t>& dimensions,
+                                              std::vector<int>& values, int& linearIndex) {
+    if (!constInitValCtx) return;
+    
+    uint64_t totalElements = std::accumulate(dimensions.begin(), dimensions.end(), 1, std::multiplies<uint64_t>());
+    
+    // 如果是标量常量表达式
+    if (constInitValCtx->constExp()) {
+        if (linearIndex < static_cast<int>(values.size())) {
+            values[linearIndex] = evaluateConstExp(constInitValCtx->constExp());
+            linearIndex++;
+        }
+        return;
+    }
+    
+    // 处理初始化列表
+    if (constInitValCtx->constInitVal().empty()) {
+        // 空列表，保持0值
+        return;
+    }
+    
+    // 处理混合初始化列表
+    for (auto constInitVal : constInitValCtx->constInitVal()) {
+        if (linearIndex >= static_cast<int>(totalElements)) break;
+        
+        if (constInitVal->constExp()) {
+            // 单个值：按行优先顺序填充
+            values[linearIndex] = evaluateConstExp(constInitVal->constExp());
+            linearIndex++;
+        } else {
+            // 嵌套列表：递归处理
+            if (dimensions.size() > 1) {
+                uint64_t subArraySize = std::accumulate(dimensions.begin() + 1, dimensions.end(), 1, std::multiplies<uint64_t>());
+                int subArrayIndex = linearIndex / subArraySize;
+                
+                // 递归处理子数组
+                std::vector<uint64_t> subDimensions(dimensions.begin() + 1, dimensions.end());
+                int oldLinearIndex = linearIndex;
+                evaluateConstInitValToList(constInitVal, subDimensions, values, linearIndex);
+                
+                // 如果 linearIndex 没有被正确更新，手动更新它
+                if (linearIndex == oldLinearIndex) {
+                    linearIndex = (subArrayIndex + 1) * subArraySize;
+                }
+            }
+        }
+    }
+}
+
+// 初始化外部库函数
+void SysYVisitor::initializeExternalFunctions() {
+    // putint: void putint(int a)
+    std::vector<std::shared_ptr<Type>> putintParams;
+    putintParams.push_back(TypeFactory::getIntType());
+    auto putintType = TypeFactory::getFunctionType(TypeFactory::getVoidType(), putintParams);
+    Function* putintFunc = new Function("putint", putintType, true);
+    putintFunc->getArguments().push_back(new Value("a", TypeFactory::getIntType()));
+    context->getModule()->addFunction(putintFunc);
+    symbolTable->addSymbol("putint", putintType, putintFunc, false, true, 0);
+    
+    // getint: int getint()
+    std::vector<std::shared_ptr<Type>> getintParams;
+    auto getintType = TypeFactory::getFunctionType(TypeFactory::getIntType(), getintParams);
+    Function* getintFunc = new Function("getint", getintType, true);
+    context->getModule()->addFunction(getintFunc);
+    symbolTable->addSymbol("getint", getintType, getintFunc, false, true, 0);
+    
+    // putch: void putch(int a)
+    std::vector<std::shared_ptr<Type>> putchParams;
+    putchParams.push_back(TypeFactory::getIntType());
+    auto putchType = TypeFactory::getFunctionType(TypeFactory::getVoidType(), putchParams);
+    Function* putchFunc = new Function("putch", putchType, true);
+    putchFunc->getArguments().push_back(new Value("a", TypeFactory::getIntType()));
+    context->getModule()->addFunction(putchFunc);
+    symbolTable->addSymbol("putch", putchType, putchFunc, false, true, 0);
+    
+    // getch: int getch()
+    std::vector<std::shared_ptr<Type>> getchParams;
+    auto getchType = TypeFactory::getFunctionType(TypeFactory::getIntType(), getchParams);
+    Function* getchFunc = new Function("getch", getchType, true);
+    context->getModule()->addFunction(getchFunc);
+    symbolTable->addSymbol("getch", getchType, getchFunc, false, true, 0);
+    
+    // putarray: void putarray(int n, int a[])
+    std::vector<std::shared_ptr<Type>> putarrayParams;
+    putarrayParams.push_back(TypeFactory::getIntType());
+    putarrayParams.push_back(TypeFactory::getPointerType(TypeFactory::getIntType()));
+    auto putarrayType = TypeFactory::getFunctionType(TypeFactory::getVoidType(), putarrayParams);
+    Function* putarrayFunc = new Function("putarray", putarrayType, true);
+    putarrayFunc->getArguments().push_back(new Value("n", TypeFactory::getIntType()));
+    putarrayFunc->getArguments().push_back(new Value("a", TypeFactory::getPointerType(TypeFactory::getIntType())));
+    context->getModule()->addFunction(putarrayFunc);
+    symbolTable->addSymbol("putarray", putarrayType, putarrayFunc, false, true, 0);
+    
+    // getarray: int getarray(int a[])
+    std::vector<std::shared_ptr<Type>> getarrayParams;
+    getarrayParams.push_back(TypeFactory::getPointerType(TypeFactory::getIntType()));
+    auto getarrayType = TypeFactory::getFunctionType(TypeFactory::getIntType(), getarrayParams);
+    Function* getarrayFunc = new Function("getarray", getarrayType, true);
+    getarrayFunc->getArguments().push_back(new Value("a", TypeFactory::getPointerType(TypeFactory::getIntType())));
+    context->getModule()->addFunction(getarrayFunc);
+    symbolTable->addSymbol("getarray", getarrayType, getarrayFunc, false, true, 0);
 }

@@ -23,6 +23,8 @@ public:
     }
 
     std::string toString() const {
+        // 基本块必须至少有一个标签，即使它是空的
+        // 在 LLVM IR 中，如果一个基本块被引用，它必须存在
         std::string result = name + ":\n";
         for (const auto& inst : instructions) {
             result += "    " + inst + "\n";

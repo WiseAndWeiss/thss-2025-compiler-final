@@ -16,11 +16,12 @@ public:
     Value* value;        // 对应的LLVM Value
     bool isConst;
     bool isGlobal;
+    int constValue;      // 对于常量，存储其值（用于常量表达式计算）
 
     // SymbolEntry Implementation
     SymbolEntry(const std::string& name, std::shared_ptr<Type> type, Value* value, 
-                bool isConst, bool isGlobal)
-        : name(name), type(type), value(value), isConst(isConst), isGlobal(isGlobal) {}
+                bool isConst, bool isGlobal, int constValue = 0)
+        : name(name), type(type), value(value), isConst(isConst), isGlobal(isGlobal), constValue(constValue) {}
 };
 
 // 符号表类
@@ -51,7 +52,7 @@ public:
     
     // 添加符号
     bool addSymbol(const std::string& name, std::shared_ptr<Type> type, Value* value = nullptr, 
-                   bool isConst = false, bool isGlobal = false);
+                   bool isConst = false, bool isGlobal = false, int constValue = 0);
     
     // 查找符号（从内到外）
     SymbolEntry* lookup(const std::string& name);

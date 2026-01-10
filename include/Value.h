@@ -11,6 +11,7 @@ private:
     
 public:
     Value(const std::string& n, std::shared_ptr<Type> t) : name(n), type(t) {}
+    virtual ~Value() = default;  // 添加虚析构函数，使类变成多态的
     
     std::string getName() const { return name; }
     std::shared_ptr<Type> getType() const { return type; }
