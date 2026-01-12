@@ -7,8 +7,11 @@
 #include <numeric>
 #include <functional>
 
+#define DEBUG_LOCATION_INFO 1;//std::cerr<<"[Debug] Enter "<<__func__<<std::endl;
+
 // compUnit : (decl | funcDef)*;
 std::any SysYVisitor::visitCompUnit(SysYParser::CompUnitContext *ctx) {
+    DEBUG_LOCATION_INFO
     // 初始化外部库函数
     initializeExternalFunctions();
     
@@ -20,6 +23,7 @@ std::any SysYVisitor::visitCompUnit(SysYParser::CompUnitContext *ctx) {
 
 // decl : constDecl | varDecl;
 std::any SysYVisitor::visitDecl(SysYParser::DeclContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (ctx->constDecl()) {
         return visitConstDecl(ctx->constDecl());
     } else if (ctx->varDecl()) {
@@ -31,6 +35,7 @@ std::any SysYVisitor::visitDecl(SysYParser::DeclContext *ctx) {
 
 // constDecl : 'const' bType constDef (',' constDef)* ';';
 std::any SysYVisitor::visitConstDecl(SysYParser::ConstDeclContext *ctx) {
+    DEBUG_LOCATION_INFO
     for (auto constDef : ctx->constDef()) {
         constDef->accept(this);
     }
@@ -39,12 +44,14 @@ std::any SysYVisitor::visitConstDecl(SysYParser::ConstDeclContext *ctx) {
 
 // bType : INT;
 std::any SysYVisitor::visitBType(SysYParser::BTypeContext *ctx) {
+    DEBUG_LOCATION_INFO
     // bType 只是类型标记，不需要生成代码
     return nullptr;
 }
 
 // constDef : IDENT ('[' constExp ']' )* '=' constInitVal;
 std::any SysYVisitor::visitConstDef(SysYParser::ConstDefContext *ctx) {
+    DEBUG_LOCATION_INFO
     std::string name = ctx->IDENT()->getText();
     bool isGlobal = (builder->getCurrentFunction() == nullptr);
     
@@ -116,15 +123,17 @@ std::any SysYVisitor::visitConstDef(SysYParser::ConstDefContext *ctx) {
 
 // varDef : IDENT ('[' constExp ']' )* ( '=' initVal )?;
 std::any SysYVisitor::visitVarDef(SysYParser::VarDefContext *ctx) {
+    DEBUG_LOCATION_INFO
     std::string name = ctx->IDENT()->getText();
+    std::cerr << "visitVarDef: " << (ctx->constExp().empty() ? "scalar" : "array") << name << std::endl;
     bool isGlobal = (builder->getCurrentFunction() == nullptr);
-    
     if (!ctx->constExp().empty()) {
         // 处理数组定义
         // 1. 计算数组维度
         std::vector<uint64_t> dimensions;
         for (auto constExpCtx : ctx->constExp()) {
             int dim = evaluateConstExp(constExpCtx);
+            std::cerr << "dim: " << dim << std::endl;
             dimensions.push_back(dim);
         }
         
@@ -142,6 +151,24 @@ std::any SysYVisitor::visitVarDef(SysYParser::VarDefContext *ctx) {
             symbolTable->addSymbol(name, ptrType, gvar, false, true, 0);
             
             // TODO: 处理全局数组初始化
+            // std::string initStr = "zeroinitializer"; // 默认零初始化
+            // // 如果有初始化列表，生成自定义初始化器
+            // if (ctx->ASSIGN() && ctx->initVal() && ctx->initVal()->constInitVal()) {
+            //     std::cerr << "[DEBUG] Generating global array initializer for: " << name << std::endl;
+            //     initStr = generateGlobalArrayInitializer(ctx->initVal()->constInitVal(), dimensions);
+            //     std::cerr << "[DEBUG] Global array initializer string: " << initStr << std::endl;
+            // }
+
+            // // 关键：创建全局变量时传递初始化器字符串（需适配IRBuilder的接口）
+            // // 方式1：如果IRBuilder的createGlobalVariable支持直接传入初始化字符串（推荐）
+            // Value* gvar = builder->createGlobalVariable(name, elementType, initStr, false);
+            
+            // // 方式2：如果IRBuilder仍用Value*传递（兼容原有接口），可封装为自定义结构体
+            // // Value* initValue = new GlobalArrayInitValue(initStr); // 自定义Value子类
+            // // Value* gvar = builder->createGlobalVariable(name, elementType, initValue, false);
+
+            // auto ptrType = TypeFactory::getPointerType(elementType);
+            // symbolTable->addSymbol(name, ptrType, gvar, false, true, 0);
         } else {
             // 局部数组
             Value* alloca = builder->createAlloca(elementType, name);
@@ -205,6 +232,7 @@ std::any SysYVisitor::visitVarDef(SysYParser::VarDefContext *ctx) {
 
 // initVal : exp | '{' (initVal (',' initVal)*)? '}';
 std::any SysYVisitor::visitInitVal(SysYParser::InitValContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (ctx->exp()) {
         return visitExp(ctx->exp());
     } else {
@@ -215,6 +243,7 @@ std::any SysYVisitor::visitInitVal(SysYParser::InitValContext *ctx) {
 
 // constInitVal : constExp | '{' (constInitVal (',' constInitVal)*)? '}';
 std::any SysYVisitor::visitConstInitVal(SysYParser::ConstInitValContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (ctx->constExp()) {
         // 标量常量表达式，在 visitConstDef 中处理
         return nullptr;
@@ -226,6 +255,7 @@ std::any SysYVisitor::visitConstInitVal(SysYParser::ConstInitValContext *ctx) {
 
 // varDecl : bType varDef (',' varDef)* ';';
 std::any SysYVisitor::visitVarDecl(SysYParser::VarDeclContext *ctx) {
+    DEBUG_LOCATION_INFO
     for (auto varDef : ctx->varDef()) {
         varDef->accept(this);
     }
@@ -234,6 +264,7 @@ std::any SysYVisitor::visitVarDecl(SysYParser::VarDeclContext *ctx) {
 
 // funcDef : funcType IDENT '(' (funcFParams)? ')' block;
 std::any SysYVisitor::visitFuncDef(SysYParser::FuncDefContext *ctx) {
+    DEBUG_LOCATION_INFO
     std::string funcName = ctx->IDENT()->getText();
     std::shared_ptr<Type> returnType = getTypeFromString(ctx->funcType()->getText());
     
@@ -287,7 +318,12 @@ std::any SysYVisitor::visitFuncDef(SysYParser::FuncDefContext *ctx) {
     // 确保基本块有终结指令
     BasicBlock* currentBB = builder->getCurrentBB();
     if (currentBB && !currentBB->isTerminated()) {
-        builder->createRet(nullptr);
+        if(returnType->toString() == "i32"){
+            Value* zero = new Value("0", TypeFactory::getIntType());
+            builder->createRet(zero);
+        }
+        else
+            builder->createRet(nullptr);
     }
     
     symbolTable->leaveScope();
@@ -298,11 +334,13 @@ std::any SysYVisitor::visitFuncDef(SysYParser::FuncDefContext *ctx) {
 
 // funcType : 'void' | 'int';
 std::any SysYVisitor::visitFuncType(SysYParser::FuncTypeContext *ctx) {
+    DEBUG_LOCATION_INFO
     return ctx->getText();
 }
 
 // funcFParams : funcFParam (',' funcFParam)*;
 std::any SysYVisitor::visitFuncFParams(SysYParser::FuncFParamsContext *ctx) {
+    DEBUG_LOCATION_INFO
     std::vector<std::pair<std::shared_ptr<Type>, std::string>> params;
     for (auto paramCtx : ctx->funcFParam()) {
         auto param = std::any_cast<std::pair<std::shared_ptr<Type>, std::string>>(visitFuncFParam(paramCtx));
@@ -313,6 +351,7 @@ std::any SysYVisitor::visitFuncFParams(SysYParser::FuncFParamsContext *ctx) {
 
 // funcFParam : bType IDENT ('[' ']')*;
 std::any SysYVisitor::visitFuncFParam(SysYParser::FuncFParamContext *ctx) {
+    DEBUG_LOCATION_INFO
     std::shared_ptr<Type> baseType = getTypeFromString(ctx->bType()->getText());
     std::string paramName = ctx->IDENT()->getText();
     
@@ -331,6 +370,7 @@ std::any SysYVisitor::visitFuncFParam(SysYParser::FuncFParamContext *ctx) {
 
 // block : '{' blockItem* '}';
 std::any SysYVisitor::visitBlock(SysYParser::BlockContext *ctx) {
+    DEBUG_LOCATION_INFO
     symbolTable->enterScope();
     for (auto blockItem : ctx->blockItem()) {
         blockItem->accept(this);
@@ -341,6 +381,7 @@ std::any SysYVisitor::visitBlock(SysYParser::BlockContext *ctx) {
 
 // blockItem : decl | stmt;
 std::any SysYVisitor::visitBlockItem(SysYParser::BlockItemContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (ctx->decl()) {
         return visitDecl(ctx->decl());
     } else if (ctx->stmt()) {
@@ -351,6 +392,7 @@ std::any SysYVisitor::visitBlockItem(SysYParser::BlockItemContext *ctx) {
 
 // stmt : lVal '=' exp ';' | (exp)? ';' | block | 'if' '(' cond ')' stmt ('else' stmt)? | 'while' '(' cond ')' stmt | 'break' ';' | 'continue' ';' | 'return' (exp)? ';';
 std::any SysYVisitor::visitStmt(SysYParser::StmtContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (ctx->ASSIGN() && ctx->lVal()) {
         // 赋值语句
         Value* lval = std::any_cast<Value*>(visitLVal(ctx->lVal()));
@@ -410,6 +452,7 @@ std::any SysYVisitor::visitStmt(SysYParser::StmtContext *ctx) {
         }
         
         // 处理 else 分支
+        bool elseTerminated;
         if (ctx->ELSE() && elseBB) {
             currentFunc->addBasicBlock(elseBB);
             builder->setInsertPoint(elseBB);
@@ -417,7 +460,7 @@ std::any SysYVisitor::visitStmt(SysYParser::StmtContext *ctx) {
             
             // 检查当前基本块是否被终止
             BasicBlock* elseBBAfter = builder->getCurrentBB();
-            bool elseTerminated = elseBBAfter ? elseBBAfter->isTerminated() : false;
+            elseTerminated = elseBBAfter ? elseBBAfter->isTerminated() : false;
             
             // 如果 elseBB 没有终结指令，跳转到 mergeBB
             if (!elseTerminated) {
@@ -437,9 +480,10 @@ std::any SysYVisitor::visitStmt(SysYParser::StmtContext *ctx) {
         BasicBlock* currentBB = builder->getCurrentBB();
         
         // 创建基本块
-        BasicBlock* condBB = new BasicBlock("while_cond_" + std::to_string(loopStack.size()));
-        BasicBlock* bodyBB = new BasicBlock("while_body_" + std::to_string(loopStack.size()));
-        BasicBlock* nextBB = new BasicBlock("while_end_" + std::to_string(loopStack.size()));
+        int currentWhileId = whileCounter++;
+        BasicBlock* condBB = new BasicBlock("while_cond_" + std::to_string(currentWhileId));
+        BasicBlock* bodyBB = new BasicBlock("while_body_" + std::to_string(currentWhileId));
+        BasicBlock* nextBB = new BasicBlock("while_end_" + std::to_string(currentWhileId));
         
         // 将循环信息压入栈
         LoopInfo loopInfo;
@@ -527,16 +571,19 @@ std::any SysYVisitor::visitStmt(SysYParser::StmtContext *ctx) {
 
 // exp : addExp;
 std::any SysYVisitor::visitExp(SysYParser::ExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     return visitAddExp(ctx->addExp());
 }
 
 // cond : lOrExp;
 std::any SysYVisitor::visitCond(SysYParser::CondContext *ctx) {
+    DEBUG_LOCATION_INFO
     return visitLOrExp(ctx->lOrExp());
 }
 
 // lVal : IDENT ('[' exp ']')*;
 std::any SysYVisitor::visitLVal(SysYParser::LValContext *ctx) {
+    DEBUG_LOCATION_INFO
     std::string name = ctx->IDENT()->getText();
     SymbolEntry* entry = symbolTable->lookup(name);
     if (!entry) {
@@ -565,12 +612,21 @@ std::any SysYVisitor::visitLVal(SysYParser::LValContext *ctx) {
 
 // primaryExp : '(' exp ')' | lVal | number;
 std::any SysYVisitor::visitPrimaryExp(SysYParser::PrimaryExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (ctx->L_PAREN() && ctx->exp()) {
         return visitExp(ctx->exp());
     } else if (ctx->lVal()) {
         Value* ptr = std::any_cast<Value*>(visitLVal(ctx->lVal()));
+        std::cerr << ptr->getName() << " : " << ptr->getType()->toString() << std::endl;
+        std::string ptrTypeStr = ptr->getType()->toString();
+        int len = ptrTypeStr.length();
+        if(ptrTypeStr[len-1] == '*' && ptrTypeStr[len-2] == ']'){
+        // 返回指针
+            return builder->createGEP(ptr, {builder->getInt32(0)});
+        }
+        else
         // 加载值
-        return builder->createLoad(ptr);
+            return builder->createLoad(ptr);
     } else if (ctx->number()) {
         return visitNumber(ctx->number());
     }
@@ -579,6 +635,7 @@ std::any SysYVisitor::visitPrimaryExp(SysYParser::PrimaryExpContext *ctx) {
 
 // number : INTEGER_CONST;
 std::any SysYVisitor::visitNumber(SysYParser::NumberContext *ctx) {
+    DEBUG_LOCATION_INFO
     std::string text = ctx->INTEGER_CONST()->getText();
     try {
         int base = 10;
@@ -598,6 +655,7 @@ std::any SysYVisitor::visitNumber(SysYParser::NumberContext *ctx) {
 
 // unaryExp : primaryExp | IDENT '(' funcRParams? ')' | unaryOp unaryExp;
 std::any SysYVisitor::visitUnaryExp(SysYParser::UnaryExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (ctx->primaryExp()) {
         return visitPrimaryExp(ctx->primaryExp());
     } else if (ctx->IDENT()) {
@@ -666,11 +724,13 @@ std::any SysYVisitor::visitUnaryExp(SysYParser::UnaryExpContext *ctx) {
 
 // unaryOp : '+' | '-' | '!';
 std::any SysYVisitor::visitUnaryOp(SysYParser::UnaryOpContext *ctx) {
+    DEBUG_LOCATION_INFO
     return ctx->getText();
 }
 
 // funcRParams : exp (',' exp)*;
 std::any SysYVisitor::visitFuncRParams(SysYParser::FuncRParamsContext *ctx) {
+    DEBUG_LOCATION_INFO
     std::vector<Value*> args;
     for (auto exp : ctx->exp()) {
         args.push_back(std::any_cast<Value*>(visitExp(exp)));
@@ -680,6 +740,7 @@ std::any SysYVisitor::visitFuncRParams(SysYParser::FuncRParamsContext *ctx) {
 
 // mulExp : unaryExp | mulExp ('*' | '/' | '%') unaryExp;
 std::any SysYVisitor::visitMulExp(SysYParser::MulExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (ctx->mulExp()) {
         Value* lhs = std::any_cast<Value*>(visitMulExp(ctx->mulExp()));
         Value* rhs = std::any_cast<Value*>(visitUnaryExp(ctx->unaryExp()));
@@ -697,6 +758,7 @@ std::any SysYVisitor::visitMulExp(SysYParser::MulExpContext *ctx) {
 
 // addExp : mulExp | addExp ('+' | '-') mulExp;
 std::any SysYVisitor::visitAddExp(SysYParser::AddExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (ctx->addExp()) {
         Value* lhs = std::any_cast<Value*>(visitAddExp(ctx->addExp()));
         Value* rhs = std::any_cast<Value*>(visitMulExp(ctx->mulExp()));
@@ -712,6 +774,7 @@ std::any SysYVisitor::visitAddExp(SysYParser::AddExpContext *ctx) {
 
 // relExp : addExp | relExp ('<' | '>' | '<=' | '>=') addExp;
 std::any SysYVisitor::visitRelExp(SysYParser::RelExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (ctx->relExp()) {
         Value* lhs = std::any_cast<Value*>(visitRelExp(ctx->relExp()));
         Value* rhs = std::any_cast<Value*>(visitAddExp(ctx->addExp()));
@@ -731,6 +794,7 @@ std::any SysYVisitor::visitRelExp(SysYParser::RelExpContext *ctx) {
 
 // eqExp : relExp | eqExp ('==' | '!=') relExp;
 std::any SysYVisitor::visitEqExp(SysYParser::EqExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (ctx->eqExp()) {
         Value* lhs = std::any_cast<Value*>(visitEqExp(ctx->eqExp()));
         Value* rhs = std::any_cast<Value*>(visitRelExp(ctx->relExp()));
@@ -746,6 +810,7 @@ std::any SysYVisitor::visitEqExp(SysYParser::EqExpContext *ctx) {
 
 // lAndExp : eqExp | lAndExp '&&' eqExp;
 std::any SysYVisitor::visitLAndExp(SysYParser::LAndExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (ctx->lAndExp()) {
         // 简化实现：不实现短路求值，使用逻辑与运算
         Value* lhs = std::any_cast<Value*>(visitLAndExp(ctx->lAndExp()));
@@ -778,6 +843,7 @@ std::any SysYVisitor::visitLAndExp(SysYParser::LAndExpContext *ctx) {
 
 // lOrExp : lAndExp | lOrExp '||' lAndExp;
 std::any SysYVisitor::visitLOrExp(SysYParser::LOrExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (ctx->lOrExp()) {
         // 简化实现：不实现短路求值，使用逻辑或运算
         Value* lhs = std::any_cast<Value*>(visitLOrExp(ctx->lOrExp()));
@@ -810,16 +876,19 @@ std::any SysYVisitor::visitLOrExp(SysYParser::LOrExpContext *ctx) {
 
 // constExp : addExp;
 std::any SysYVisitor::visitConstExp(SysYParser::ConstExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     return visitChildren(ctx);
 }
 
 std::shared_ptr<Type> SysYVisitor::getTypeFromString(const std::string& typeStr) {
+    DEBUG_LOCATION_INFO
     if (typeStr == "int") return TypeFactory::getIntType();
     if (typeStr == "void") return TypeFactory::getVoidType();
     return TypeFactory::getIntType();
 }
 
 int SysYVisitor::evaluateConstExp(SysYParser::ConstExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     // constExp : addExp;
     if (!ctx || !ctx->addExp()) {
         return 0;
@@ -828,6 +897,7 @@ int SysYVisitor::evaluateConstExp(SysYParser::ConstExpContext *ctx) {
 }
 
 int SysYVisitor::evaluateAddExp(SysYParser::AddExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (!ctx) return 0;
     
     if (ctx->addExp()) {
@@ -844,6 +914,7 @@ int SysYVisitor::evaluateAddExp(SysYParser::AddExpContext *ctx) {
 }
 
 int SysYVisitor::evaluateMulExp(SysYParser::MulExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (!ctx) return 0;
     
     if (ctx->mulExp()) {
@@ -862,6 +933,7 @@ int SysYVisitor::evaluateMulExp(SysYParser::MulExpContext *ctx) {
 }
 
 int SysYVisitor::evaluateUnaryExp(SysYParser::UnaryExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (!ctx) return 0;
     
     if (ctx->primaryExp()) {
@@ -882,6 +954,7 @@ int SysYVisitor::evaluateUnaryExp(SysYParser::UnaryExpContext *ctx) {
 }
 
 int SysYVisitor::evaluatePrimaryExp(SysYParser::PrimaryExpContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (!ctx) return 0;
     
     if (ctx->number()) {
@@ -907,6 +980,7 @@ int SysYVisitor::evaluateExp(SysYParser::ExpContext *ctx) {
 }
 
 int SysYVisitor::evaluateNumber(SysYParser::NumberContext *ctx) {
+    DEBUG_LOCATION_INFO
     if (!ctx || !ctx->INTEGER_CONST()) return 0;
     
     std::string text = ctx->INTEGER_CONST()->getText();
@@ -930,6 +1004,7 @@ int SysYVisitor::evaluateNumber(SysYParser::NumberContext *ctx) {
 void SysYVisitor::initializeArray(Value* arrayPtr, std::shared_ptr<Type> arrayType, 
                                   SysYParser::InitValContext* initValCtx, 
                                   const std::vector<uint64_t>& dimensions, int& linearIndex) {
+    DEBUG_LOCATION_INFO
     if (!initValCtx) return;
     
     // 如果是标量表达式，直接存储到当前位置
@@ -1015,6 +1090,7 @@ void SysYVisitor::initializeArray(Value* arrayPtr, std::shared_ptr<Type> arrayTy
 void SysYVisitor::initializeArrayConst(Value* arrayPtr, std::shared_ptr<Type> arrayType, 
                                        SysYParser::ConstInitValContext* constInitValCtx, 
                                        const std::vector<uint64_t>& dimensions, int& linearIndex) {
+    DEBUG_LOCATION_INFO
     if (!constInitValCtx) return;
     
     // 如果是标量常量表达式，直接存储到当前位置
@@ -1098,6 +1174,7 @@ void SysYVisitor::initializeArrayConst(Value* arrayPtr, std::shared_ptr<Type> ar
 // 生成全局常量数组初始化器字符串
 std::string SysYVisitor::generateGlobalArrayInitializer(SysYParser::ConstInitValContext* constInitValCtx, 
                                                          const std::vector<uint64_t>& dimensions) {
+    DEBUG_LOCATION_INFO
     if (!constInitValCtx) {
         return "zeroinitializer";
     }
@@ -1158,6 +1235,7 @@ std::string SysYVisitor::generateGlobalArrayInitializer(SysYParser::ConstInitVal
 void SysYVisitor::evaluateConstInitValToList(SysYParser::ConstInitValContext* constInitValCtx,
                                               const std::vector<uint64_t>& dimensions,
                                               std::vector<int>& values, int& linearIndex) {
+    DEBUG_LOCATION_INFO
     if (!constInitValCtx) return;
     
     uint64_t totalElements = std::accumulate(dimensions.begin(), dimensions.end(), 1, std::multiplies<uint64_t>());
@@ -1208,6 +1286,7 @@ void SysYVisitor::evaluateConstInitValToList(SysYParser::ConstInitValContext* co
 // 初始化外部库函数
 void SysYVisitor::initializeExternalFunctions() {
     // putint: void putint(int a)
+    DEBUG_LOCATION_INFO
     std::vector<std::shared_ptr<Type>> putintParams;
     putintParams.push_back(TypeFactory::getIntType());
     auto putintType = TypeFactory::getFunctionType(TypeFactory::getVoidType(), putintParams);

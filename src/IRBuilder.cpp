@@ -77,22 +77,34 @@ Value* IRBuilder::createGEP(Value* ptr, const std::vector<Value*>& indices, cons
     if (indices.empty()) {
         return ptr;
     }
-    
+    std::vector<Value*> indicesCopy = indices;
     std::string actualName = name.empty() ? generateTempName("gep_temp") : name;
     std::stringstream ss;
     
     // 获取指针指向的类型
     auto ptrType = std::dynamic_pointer_cast<PointerType>(ptr->getType());
-    std::shared_ptr<Type> elementType = ptrType ? ptrType->getPointedType() : TypeFactory::getIntType();
+    std::shared_ptr<Type> elementType;
     
-    ss << "%" << actualName << " = getelementptr " << elementType->toString() << ", " 
-       << ptr->getType()->toString() << " " << formatPtrValue(ptr);
-    
-    // 第一个索引通常是0（从数组开始）
-    ss << ", i32 0";
+    std::string typetostr = ptr->getType()->toString();
+    int len = typetostr.length();
+    if(typetostr[len-1] == '*' && typetostr[len-2] == '*'){
+        Value* tmp = createLoad(ptr);
+        ptrType = std::dynamic_pointer_cast<PointerType>(tmp->getType());
+        elementType = ptrType ? ptrType->getPointedType() : TypeFactory::getIntType();
+        typetostr = tmp->getType()->toString();
+        len = typetostr.length();
+        ss << "%" << actualName << " = getelementptr " << elementType->toString() << ", " << tmp->getType()->toString() << " " << formatPtrValue(tmp);
+    }
+    else{
+        elementType = ptrType ? ptrType->getPointedType() : TypeFactory::getIntType();
+        ss << "%" << actualName << " = getelementptr " << elementType->toString() << ", " 
+            << ptr->getType()->toString() << " " << formatPtrValue(ptr);
+        // 第一个索引通常是0（从数组开始）
+        ss << ", i32 0";
+    }
     
     // 后续索引
-    for (auto idx : indices) {
+    for (auto idx : indicesCopy) {
         ss << ", i32 " << formatValue(idx);
     }
     
@@ -101,7 +113,7 @@ Value* IRBuilder::createGEP(Value* ptr, const std::vector<Value*>& indices, cons
     // GEP 返回的是指针类型，指向最终的元素类型
     // 需要根据索引计算最终的元素类型
     std::shared_ptr<Type> finalType = elementType;
-    for (size_t i = 0; i < indices.size(); ++i) {
+    for (size_t i = 0; i < indicesCopy.size(); ++i) {
         if (auto arrayType = std::dynamic_pointer_cast<ArrayType>(finalType)) {
             finalType = arrayType->getElementType();
         } else {
@@ -368,6 +380,7 @@ Value* IRBuilder::createTrunc(Value* value, std::shared_ptr<Type> destType, cons
     addInstruction(ss.str());
     return new Value(actualName, destType);
 }
+
 
 Value* IRBuilder::createGlobalVariable(const std::string& name, std::shared_ptr<Type> type, 
                                        Value* initializer, bool isConst) {

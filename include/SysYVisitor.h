@@ -24,10 +24,11 @@ protected:
     };
     std::vector<LoopInfo> loopStack;  // 循环栈，用于嵌套循环
     int ifCounter;  // if-else 语句计数器，用于生成唯一的基本块名称
+    int whileCounter;  // while 语句计数器，用于生成唯一的基本块名称
     
 public:
     SysYVisitor(LLVMContext* ctx) : context(ctx), 
-        builder(ctx->getBuilder()), symbolTable(ctx->getSymbolTable()), ifCounter(0) {}
+        builder(ctx->getBuilder()), symbolTable(ctx->getSymbolTable()), ifCounter(0), whileCounter(0) {}
     
     // 重写关键visit方法
     std::any visitCompUnit(SysYParser::CompUnitContext *ctx) override;
