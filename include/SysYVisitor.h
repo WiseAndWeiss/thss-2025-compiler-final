@@ -87,6 +87,11 @@ public:
     void evaluateConstInitValToList(SysYParser::ConstInitValContext* constInitValCtx,
                                     const std::vector<uint64_t>& dimensions,
                                     std::vector<int>& values, int& linearIndex);
+    std::string generateGlobalArrayInitializer(SysYParser::InitValContext* constInitValCtx, 
+                                               const std::vector<uint64_t>& dimensions);
+    void evaluateInitValToList(SysYParser::InitValContext* initValCtx,
+                                    const std::vector<uint64_t>& dimensions,
+                                    std::vector<int>& values, int& linearIndex);
     
     // 初始化外部库函数
     void initializeExternalFunctions();

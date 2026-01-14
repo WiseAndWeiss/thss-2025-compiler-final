@@ -125,7 +125,7 @@ std::any SysYVisitor::visitConstDef(SysYParser::ConstDefContext *ctx) {
 std::any SysYVisitor::visitVarDef(SysYParser::VarDefContext *ctx) {
     DEBUG_LOCATION_INFO
     std::string name = ctx->IDENT()->getText();
-    std::cerr << "visitVarDef: " << (ctx->constExp().empty() ? "scalar" : "array") << name << std::endl;
+    std::cerr << "visitVarDef: " << (ctx->constExp().empty() ? "scalar " : "array ") << name << std::endl;
     bool isGlobal = (builder->getCurrentFunction() == nullptr);
     if (!ctx->constExp().empty()) {
         // 处理数组定义
@@ -146,9 +146,15 @@ std::any SysYVisitor::visitVarDef(SysYParser::VarDefContext *ctx) {
         // 3. 分配数组空间
         if (isGlobal) {
             // 全局数组
-            Value* gvar = builder->createGlobalVariable(name, elementType, nullptr, false);
+            Value* initValue = nullptr;
+            if (ctx->initVal()) {
+                std::string initStr = generateGlobalArrayInitializer(ctx->initVal(), dimensions);
+                initValue = new Value(initStr, elementType);
+            }
+            Value* gvar = builder->createGlobalVariable(name, elementType, initValue, false);
             auto ptrType = TypeFactory::getPointerType(elementType);
             symbolTable->addSymbol(name, ptrType, gvar, false, true, 0);
+            std::cerr << "[DEBUG] Created global array: " << name << std::endl;
             
             // TODO: 处理全局数组初始化
             // std::string initStr = "zeroinitializer"; // 默认零初始化
@@ -896,6 +902,7 @@ int SysYVisitor::evaluateConstExp(SysYParser::ConstExpContext *ctx) {
     return evaluateAddExp(ctx->addExp());
 }
 
+
 int SysYVisitor::evaluateAddExp(SysYParser::AddExpContext *ctx) {
     DEBUG_LOCATION_INFO
     if (!ctx) return 0;
@@ -1231,6 +1238,65 @@ std::string SysYVisitor::generateGlobalArrayInitializer(SysYParser::ConstInitVal
     }
 }
 
+std::string SysYVisitor::generateGlobalArrayInitializer(SysYParser::InitValContext* initValCtx, 
+                                                         const std::vector<uint64_t>& dimensions) {
+    DEBUG_LOCATION_INFO
+    if (!initValCtx) {
+        return "zeroinitializer";
+    }
+    
+    uint64_t totalElements = std::accumulate(dimensions.begin(), dimensions.end(), 1, std::multiplies<uint64_t>());
+    std::vector<int> values(totalElements, 0);
+    int linearIndex = 0;
+    
+    evaluateInitValToList(initValCtx, dimensions, values, linearIndex);
+    
+    // 生成初始化器字符串
+    if (dimensions.size() == 1) {
+        // 一维数组：[i32 0, i32 1, i32 2, ...]
+        std::string result = "[";
+        for (size_t i = 0; i < values.size(); ++i) {
+            if (i > 0) result += ", ";
+            result += "i32 " + std::to_string(values[i]);
+        }
+        result += "]";
+        return result;
+    } else {
+        // 多维数组：需要嵌套结构
+        // 例如：[2 x [2 x i32]] 的初始化器应该是 [[i32 0, i32 1], [i32 2, i32 3]]
+        std::string result = "[";
+        uint64_t subArraySize = std::accumulate(dimensions.begin() + 1, dimensions.end(), 1, std::multiplies<uint64_t>());
+        for (size_t i = 0; i < dimensions[0]; ++i) {
+            if (i > 0) result += ", ";
+            if (dimensions.size() == 2) {
+                // 二维数组：每个子数组是 [i32 x, i32 y, ...]
+                result += "[";
+                for (size_t j = 0; j < subArraySize; ++j) {
+                    if (j > 0) result += ", ";
+                    result += "i32 " + std::to_string(values[i * subArraySize + j]);
+                }
+                result += "]";
+            } else {
+                // 更高维数组：递归处理
+                std::vector<uint64_t> subDimensions(dimensions.begin() + 1, dimensions.end());
+                std::vector<int> subValues(subArraySize);
+                for (size_t j = 0; j < subArraySize; ++j) {
+                    subValues[j] = values[i * subArraySize + j];
+                }
+                // 简化处理：对于更高维数组，暂时使用扁平化表示
+                result += "[";
+                for (size_t j = 0; j < subArraySize; ++j) {
+                    if (j > 0) result += ", ";
+                    result += "i32 " + std::to_string(values[i * subArraySize + j]);
+                }
+                result += "]";
+            }
+        }
+        result += "]";
+        return result;
+    }
+}
+
 // 将常量初始化值列表转换为值数组
 void SysYVisitor::evaluateConstInitValToList(SysYParser::ConstInitValContext* constInitValCtx,
                                               const std::vector<uint64_t>& dimensions,
@@ -1273,6 +1339,57 @@ void SysYVisitor::evaluateConstInitValToList(SysYParser::ConstInitValContext* co
                 std::vector<uint64_t> subDimensions(dimensions.begin() + 1, dimensions.end());
                 int oldLinearIndex = linearIndex;
                 evaluateConstInitValToList(constInitVal, subDimensions, values, linearIndex);
+                
+                // 如果 linearIndex 没有被正确更新，手动更新它
+                if (linearIndex == oldLinearIndex) {
+                    linearIndex = (subArrayIndex + 1) * subArraySize;
+                }
+            }
+        }
+    }
+}
+
+void SysYVisitor::evaluateInitValToList(SysYParser::InitValContext* initValCtx,
+                                              const std::vector<uint64_t>& dimensions,
+                                              std::vector<int>& values, int& linearIndex) {
+    DEBUG_LOCATION_INFO
+    if (!initValCtx) return;
+    
+    uint64_t totalElements = std::accumulate(dimensions.begin(), dimensions.end(), 1, std::multiplies<uint64_t>());
+    
+    // 如果是标量常量表达式
+    if (initValCtx->exp()) {
+        if (linearIndex < static_cast<int>(values.size())) {
+            values[linearIndex] = evaluateExp(initValCtx->exp());
+            linearIndex++;
+        }
+        return;
+    }
+    
+    // 处理初始化列表
+    if (initValCtx->initVal().empty()) {
+        // 空列表，保持0值
+        return;
+    }
+    
+    // 处理混合初始化列表
+    for (auto initVal : initValCtx->initVal()) {
+        if (linearIndex >= static_cast<int>(totalElements)) break;
+        
+        if (initVal->exp()) {
+            // 单个值：按行优先顺序填充
+            values[linearIndex] = evaluateExp(initVal->exp());
+            linearIndex++;
+        } else {
+            // 嵌套列表：递归处理
+            if (dimensions.size() > 1) {
+                uint64_t subArraySize = std::accumulate(dimensions.begin() + 1, dimensions.end(), 1, std::multiplies<uint64_t>());
+                int subArrayIndex = linearIndex / subArraySize;
+                
+                // 递归处理子数组
+                std::vector<uint64_t> subDimensions(dimensions.begin() + 1, dimensions.end());
+                int oldLinearIndex = linearIndex;
+                evaluateInitValToList(initVal, subDimensions, values, linearIndex);
                 
                 // 如果 linearIndex 没有被正确更新，手动更新它
                 if (linearIndex == oldLinearIndex) {
