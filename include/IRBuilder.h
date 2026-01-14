@@ -47,6 +47,8 @@ public:
     
     // 全局变量操作
     Value* createGlobalVariable(const std::string& name, std::shared_ptr<Type> type, 
+                                const std::string& initStr, bool isConst);
+    Value* createGlobalVariable(const std::string& name, std::shared_ptr<Type> type, 
                                 Value* initializer = nullptr, bool isConst = false);
     
     // 算术运算指令

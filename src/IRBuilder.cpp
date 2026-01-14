@@ -14,7 +14,7 @@ static std::string formatValue(Value* v) {
     if (std::regex_match(name, std::regex("-?[0-9]+")) || name == "true" || name == "false") {
         return name;
     }
-    return "%" + name;
+    return "%" + v->getUniqueName();
 }
 
 // 辅助函数：格式化指针值（用于 load/store 指令，区分全局变量和局部变量）
@@ -30,7 +30,7 @@ static std::string formatPtrValue(Value* v) {
     if (gvar) {
         return "@" + name;
     }
-    return "%" + name;
+    return "%" + v->getUniqueName();
 }
 
 // 常量创建
@@ -50,12 +50,14 @@ Value* IRBuilder::createAlloca(std::shared_ptr<Type> type, const std::string& na
     // 含义：在栈上分配一个i32类型的变量
     // alloca 返回的是指针类型，所以需要创建指针类型
     std::string actualName = name.empty() ? "temp" : name;
+    std::string uniqueName = actualName + "_" + std::to_string(rand()%1000);
+    auto ptrType = TypeFactory::getPointerType(type);
+    Value* ptr = new Value(actualName, ptrType, uniqueName);
     std::stringstream ss;
-    ss << "%" << actualName << " = alloca " << type->toString() << ", align 4";
+    ss << "%" << ptr->getUniqueName() << " = alloca " << type->toString() << ", align 4";
     addInstruction(ss.str());
     // alloca 返回的是指针类型
-    auto ptrType = TypeFactory::getPointerType(type);
-    return new Value(actualName, ptrType);
+    return ptr;
 }
 
 Value* IRBuilder::createStore(Value* value, Value* ptr) {
