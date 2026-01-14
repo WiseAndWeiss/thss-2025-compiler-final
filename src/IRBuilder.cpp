@@ -5,6 +5,7 @@
 #include "Type.h"
 #include <sstream>
 #include <regex>
+#include <functional>
 
 // 辅助函数：格式化Value输出(常量和变量区分)
 static std::string formatValue(Value* v) {
@@ -49,10 +50,18 @@ Value* IRBuilder::createAlloca(std::shared_ptr<Type> type, const std::string& na
     // e.g: %name = alloca i32, align 4
     // 含义：在栈上分配一个i32类型的变量
     // alloca 返回的是指针类型，所以需要创建指针类型
-    std::string actualName = name.empty() ? "temp" : name;
+    std::string baseName = name.empty() ? "temp" : name;
+    std::string actualName = getUniqueName(baseName);
+
     std::stringstream ss;
     ss << "%" << actualName << " = alloca " << type->toString() << ", align 4";
-    addInstruction(ss.str());
+    
+    if (currentFunc && !currentFunc->getBasicBlocks().empty()) {
+        currentFunc->getBasicBlocks().front()->addInstructionFront(ss.str());
+    } else {
+        addInstruction(ss.str());
+    }
+    
     // alloca 返回的是指针类型
     auto ptrType = TypeFactory::getPointerType(type);
     return new Value(actualName, ptrType);
@@ -123,6 +132,22 @@ Value* IRBuilder::createGEP(Value* ptr, const std::vector<Value*>& indices, cons
     
     auto resultPtrType = TypeFactory::getPointerType(finalType);
     return new Value(actualName, resultPtrType);
+}
+
+Value* IRBuilder::createPhi(std::shared_ptr<Type> type, const std::vector<std::pair<Value*, BasicBlock*>>& incoming, const std::string& name) {
+    // 生成 phi 指令
+    // e.g: %val = phi i32 [ %val1, %bb1 ], [ %val2, %bb2 ]
+    std::string actualName = name.empty() ? generateTempName("phi_temp") : name;
+    std::stringstream ss;
+    ss << "%" << actualName << " = phi " << type->toString();
+    
+    for (size_t i = 0; i < incoming.size(); ++i) {
+        if (i > 0) ss << ",";
+        ss << " [ " << formatValue(incoming[i].first) << ", %" << incoming[i].second->getName() << " ]";
+    }
+    
+    addInstruction(ss.str());
+    return new Value(actualName, type);
 }
 
 Value* IRBuilder::createLoad(Value* ptr, const std::string& name) {
@@ -381,6 +406,47 @@ Value* IRBuilder::createTrunc(Value* value, std::shared_ptr<Type> destType, cons
     return new Value(actualName, destType);
 }
 
+void IRBuilder::createMemZero(Value* ptr, int size) {
+    if (size <= 0) return;
+    
+    // i = 0
+    Value* iPtr = createAlloca(TypeFactory::getIntType(), generateTempName("mz_i"));
+    createStore(getInt32(0), iPtr);
+    
+    BasicBlock* condBB = new BasicBlock(getUniqueName("mz_cond"));
+    BasicBlock* bodyBB = new BasicBlock(getUniqueName("mz_body"));
+    BasicBlock* endBB = new BasicBlock(getUniqueName("mz_end"));
+    
+    createBr(condBB);
+    
+    currentFunc->addBasicBlock(condBB);
+    setInsertPoint(condBB);
+    
+    Value* iVal = createLoad(iPtr);
+    Value* cond = createICmpSLT(iVal, getInt32(size));
+    createCondBr(cond, bodyBB, endBB);
+    
+    currentFunc->addBasicBlock(bodyBB);
+    setInsertPoint(bodyBB);
+    
+    // ptr[i] = 0
+    std::string ptrName = getUniqueName("mz_ptr");
+    std::stringstream ss;
+    ss << "%" << ptrName << " = getelementptr i32, i32* " << formatValue(ptr) << ", i32 " << formatValue(iVal);
+    addInstruction(ss.str());
+    
+    Value* ptrI = new Value(ptrName, ptr->getType()); 
+    createStore(getInt32(0), ptrI);
+    
+    // i++
+    Value* iNext = createAdd(iVal, getInt32(1));
+    createStore(iNext, iPtr);
+    
+    createBr(condBB);
+    
+    currentFunc->addBasicBlock(endBB);
+    setInsertPoint(endBB);
+}
 
 Value* IRBuilder::createGlobalVariable(const std::string& name, std::shared_ptr<Type> type, 
                                        Value* initializer, bool isConst) {
@@ -401,7 +467,23 @@ void IRBuilder::addInstruction(const std::string& instruction) {
 }
 
 std::string IRBuilder::generateTempName(const std::string& prefix) {
-    return prefix + std::to_string(tempCounter++);
+    return getUniqueName(prefix);
+}
+
+std::string IRBuilder::getUniqueName(const std::string& baseName) {
+    std::string key = baseName;
+    if (key.length() > 64) {
+        size_t hash = std::hash<std::string>{}(key);
+        key = key.substr(0, 20) + "_hash_" + std::to_string(hash);
+    }
+
+    if (nameCounter.find(key) == nameCounter.end()) {
+        nameCounter[key] = 0;
+        return key;
+    } else {
+        nameCounter[key]++;
+        return key + std::to_string(nameCounter[key]);
+    }
 }
 
 

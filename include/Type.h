@@ -19,6 +19,7 @@ public:
     enum TypeID {
         IntTypeID,
         Int1TypeID,
+        Int64TypeID,
         VoidTypeID,
         ArrayTypeID,
         FunctionTypeID,
@@ -67,7 +68,21 @@ public:
 private:
     Int1Type() : Type(Int1TypeID) {}
 };
-
+// Int64Type Class
+class Int64Type : public Type {
+public:
+    static std::shared_ptr<Int64Type> getInstance() {
+        static std::shared_ptr<Int64Type> instance(new Int64Type());
+        return instance;
+    }
+    
+    std::string toString() const override {
+        return "i64";  // LLVM IR中的64位整数
+    }
+    
+private:
+    Int64Type() : Type(Int64TypeID) {}
+};
 // VoidType Class
 class VoidType : public Type {
 public:
@@ -161,6 +176,7 @@ class TypeFactory {
 public:
     // 基本类型获取
     static std::shared_ptr<IntType> getIntType() { return IntType::getInstance(); }
+    static std::shared_ptr<Int64Type> getInt64Type() { return Int64Type::getInstance(); }
     static std::shared_ptr<Int1Type> getInt1Type() { return Int1Type::getInstance(); }
     static std::shared_ptr<VoidType> getVoidType() { return VoidType::getInstance(); }
     
@@ -186,6 +202,7 @@ public:
         
         switch (type1->getTypeID()) {
             case Type::IntTypeID:
+            case Type::Int64TypeID:
             case Type::Int1TypeID:
             case Type::VoidTypeID:
                 return true;

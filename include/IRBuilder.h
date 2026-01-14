@@ -7,6 +7,7 @@
 #include "BasicBlock.h"
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 // 前置声明LLVM类型（实际使用时替换为真实LLVM类型）
 namespace llvm {
@@ -23,6 +24,10 @@ private:
     Function* currentFunc;
     std::string indent;  // 用于格式化输出
     int tempCounter;     // 用于生成唯一的临时变量名
+    std::unordered_map<std::string, int> nameCounter; // 记录当期函数内变量名使用次数
+
+    // 获取唯一名称
+    std::string getUniqueName(const std::string& baseName);
     
 public:
     IRBuilder(Module* mod = nullptr) 
@@ -30,10 +35,18 @@ public:
     
     // 设置当前插入点
     void setInsertPoint(BasicBlock* bb) { currentBB = bb; }
-    void setCurrentFunction(Function* func) { currentFunc = func; }
+    void setCurrentFunction(Function* func) { 
+        currentFunc = func; 
+        // 切换函数时重置名称计数器和临时变量计数器
+        nameCounter.clear();
+        tempCounter = 0;
+    }
     
     BasicBlock* getCurrentBB() { return currentBB; }
     Function* getCurrentFunction() { return currentFunc; }
+    
+    // 内存清零
+    void createMemZero(Value* ptr, int size);
     
     // 常量创建
     Value* getInt32(int value);
@@ -44,7 +57,8 @@ public:
     Value* createLoad(Value* ptr, const std::string& name = "");
     Value* createStore(Value* value, Value* ptr);
     Value* createGEP(Value* ptr, const std::vector<Value*>& indices, const std::string& name = "");
-    
+    Value* createPhi(std::shared_ptr<Type> type, const std::vector<std::pair<Value*, BasicBlock*>>& incoming, const std::string& name = "");
+
     // 全局变量操作
     Value* createGlobalVariable(const std::string& name, std::shared_ptr<Type> type, 
                                 Value* initializer = nullptr, bool isConst = false);

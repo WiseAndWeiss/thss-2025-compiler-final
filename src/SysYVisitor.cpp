@@ -183,6 +183,19 @@ std::any SysYVisitor::visitVarDef(SysYParser::VarDefContext *ctx) {
             
             // 处理局部数组初始化
             if (ctx->ASSIGN() && ctx->initVal()) {
+                // 先进行零初始化
+                uint64_t totalElements = std::accumulate(dimensions.begin(), dimensions.end(), 1, std::multiplies<uint64_t>());
+                
+                // 获取指向第一个元素的指针 (i32*)
+                // createGEP 自动添加第一个 0 索引，然后我们需要为每一维添加一个 0 索引
+                std::vector<Value*> zeros;
+                for (size_t i = 0; i < dimensions.size(); ++i) {
+                    zeros.push_back(builder->getInt32(0));
+                }
+                Value* elemPtr = builder->createGEP(alloca, zeros);
+                
+                builder->createMemZero(elemPtr, totalElements);
+                
                 int linearIndex = 0;
                 initializeArray(alloca, elementType, ctx->initVal(), dimensions, linearIndex);
             }
@@ -362,12 +375,20 @@ std::any SysYVisitor::visitFuncFParam(SysYParser::FuncFParamContext *ctx) {
     std::string paramName = ctx->IDENT()->getText();
     
     // 处理数组参数
-    // 计算数组维度（通过计算 L_BRACKT 的数量）
-    int arrayDim = 0;
-    if (ctx->L_BRACKT().size() > 0) {
-        arrayDim = ctx->L_BRACKT().size();
+    // SysY中数组参数第一维必须为空，如 int a[][5] 或 int a[]
+    // 实际上是传递指针，如 int (*a)[5] 或 int *a
+    
+    // 获取所有维度表达式（从第二维开始）
+    auto exps = ctx->exp();
+    
+    // 从内向外构建数组类型
+    for (auto it = exps.rbegin(); it != exps.rend(); ++it) {
+        int dim = evaluateExp(*it);
+        baseType = TypeFactory::getArrayType(baseType, dim);
     }
-    for (int i = 0; i < arrayDim; ++i) {
+    
+    // 如果有方括号，最外层是指针（衰退的第一维）
+    if (!ctx->L_BRACKT().empty()) {
         baseType = TypeFactory::getPointerType(baseType);
     }
     
@@ -751,6 +772,14 @@ std::any SysYVisitor::visitMulExp(SysYParser::MulExpContext *ctx) {
         Value* lhs = std::any_cast<Value*>(visitMulExp(ctx->mulExp()));
         Value* rhs = std::any_cast<Value*>(visitUnaryExp(ctx->unaryExp()));
         
+        // 类型提升：i1 -> i32
+        if (lhs->getType()->toString() == "i1") {
+            lhs = builder->createZExt(lhs, TypeFactory::getIntType());
+        }
+        if (rhs->getType()->toString() == "i1") {
+            rhs = builder->createZExt(rhs, TypeFactory::getIntType());
+        }
+
         if (ctx->MUL()) {
             return builder->createMul(lhs, rhs);
         } else if (ctx->DIV()) {
@@ -769,6 +798,14 @@ std::any SysYVisitor::visitAddExp(SysYParser::AddExpContext *ctx) {
         Value* lhs = std::any_cast<Value*>(visitAddExp(ctx->addExp()));
         Value* rhs = std::any_cast<Value*>(visitMulExp(ctx->mulExp()));
         
+        // 类型提升：i1 -> i32
+        if (lhs->getType()->toString() == "i1") {
+            lhs = builder->createZExt(lhs, TypeFactory::getIntType());
+        }
+        if (rhs->getType()->toString() == "i1") {
+            rhs = builder->createZExt(rhs, TypeFactory::getIntType());
+        }
+        
         if (ctx->PLUS()) {
             return builder->createAdd(lhs, rhs);
         } else if (ctx->MINUS()) {
@@ -784,6 +821,14 @@ std::any SysYVisitor::visitRelExp(SysYParser::RelExpContext *ctx) {
     if (ctx->relExp()) {
         Value* lhs = std::any_cast<Value*>(visitRelExp(ctx->relExp()));
         Value* rhs = std::any_cast<Value*>(visitAddExp(ctx->addExp()));
+        
+        // 类型提升：i1 -> i32
+        if (lhs->getType()->toString() == "i1") {
+            lhs = builder->createZExt(lhs, TypeFactory::getIntType());
+        }
+        if (rhs->getType()->toString() == "i1") {
+            rhs = builder->createZExt(rhs, TypeFactory::getIntType());
+        }
         
         if (ctx->LT()) {
             return builder->createICmpSLT(lhs, rhs);
@@ -805,6 +850,14 @@ std::any SysYVisitor::visitEqExp(SysYParser::EqExpContext *ctx) {
         Value* lhs = std::any_cast<Value*>(visitEqExp(ctx->eqExp()));
         Value* rhs = std::any_cast<Value*>(visitRelExp(ctx->relExp()));
         
+        // 类型提升：i1 -> i32
+        if (lhs->getType()->toString() == "i1") {
+            lhs = builder->createZExt(lhs, TypeFactory::getIntType());
+        }
+        if (rhs->getType()->toString() == "i1") {
+            rhs = builder->createZExt(rhs, TypeFactory::getIntType());
+        }
+        
         if (ctx->EQ()) {
             return builder->createICmpEQ(lhs, rhs);
         } else if (ctx->NEQ()) {
@@ -818,31 +871,56 @@ std::any SysYVisitor::visitEqExp(SysYParser::EqExpContext *ctx) {
 std::any SysYVisitor::visitLAndExp(SysYParser::LAndExpContext *ctx) {
     DEBUG_LOCATION_INFO
     if (ctx->lAndExp()) {
-        // 简化实现：不实现短路求值，使用逻辑与运算
+        // 短路求值实现
+        // 1. 计算左操作数
         Value* lhs = std::any_cast<Value*>(visitLAndExp(ctx->lAndExp()));
+        
+        // 类型转换转为 i1
+        if (lhs->getType()->toString() != "i1") {
+            lhs = builder->createICmpNE(lhs, builder->getInt32(0));
+        }
+        
+        // 获取当前基本块（lhs结束块）
+        BasicBlock* lhsBB = builder->getCurrentBB();
+        Function* currentFunc = builder->getCurrentFunction();
+        
+        // 创建新基本块
+        int count = currentFunc->getBasicBlocks().size(); // 简单计数，实际应使用更稳健的命名
+        BasicBlock* rhsBB = new BasicBlock("land_rhs_" + std::to_string(count));
+        BasicBlock* mergeBB = new BasicBlock("land_merge_" + std::to_string(count));
+        
+        // 2. 如果左操作数为真，跳转到rhsBB；否则跳转到mergeBB（结果为假）
+        // 注意：如果lhs为false，我们不需要计算rhs，直接结果为false。
+        builder->createCondBr(lhs, rhsBB, mergeBB);
+        
+        // 3. 在rhsBB中计算右操作数
+        currentFunc->addBasicBlock(rhsBB);
+        builder->setInsertPoint(rhsBB);
+        
         Value* rhs = std::any_cast<Value*>(visitEqExp(ctx->eqExp()));
         
-        // 如果 lhs 和 rhs 都是 i1 类型，直接使用 and 指令
-        // 否则需要转换
-        if (lhs->getType()->toString() == "i1" && rhs->getType()->toString() == "i1") {
-            // 将 i1 转换为 i32，进行逻辑与，再转换回 i1
-            Value* lhs_i32 = builder->createZExt(lhs, TypeFactory::getIntType());
-            Value* rhs_i32 = builder->createZExt(rhs, TypeFactory::getIntType());
-            Value* zero = builder->getInt32(0);
-            Value* mul_result = builder->createMul(lhs_i32, rhs_i32);
-            Value* result_ne_zero = builder->createICmpNE(mul_result, zero);
-            return result_ne_zero;
-        } else {
-            // 如果类型不匹配，先转换为 i32
-            Value* zero = builder->getInt32(0);
-            Value* lhs_ne_zero = builder->createICmpNE(lhs, zero);
-            Value* rhs_ne_zero = builder->createICmpNE(rhs, zero);
-            Value* lhs_i32 = builder->createZExt(lhs_ne_zero, TypeFactory::getIntType());
-            Value* rhs_i32 = builder->createZExt(rhs_ne_zero, TypeFactory::getIntType());
-            Value* mul_result = builder->createMul(lhs_i32, rhs_i32);
-            Value* result_ne_zero = builder->createICmpNE(mul_result, zero);
-            return result_ne_zero;
+        // 类型转换转为 i1
+        if (rhs->getType()->toString() != "i1") {
+            rhs = builder->createICmpNE(rhs, builder->getInt32(0));
         }
+        
+        // rhs计算完后跳转到mergeBB
+        builder->createBr(mergeBB);
+        // 获取 rhs 结束块 (可能在 rhs 计算中生成了新块)
+        BasicBlock* rhsEndBB = builder->getCurrentBB();
+        
+        // 4. mergeBB
+        currentFunc->addBasicBlock(mergeBB);
+        builder->setInsertPoint(mergeBB);
+        
+        // 使用 PHI 节点合并结果
+        // 如果来自 lhsBB (lhs为false)，结果为 false
+        // 如果来自 rhsEndBB (lhs为true，结果同rhs)，结果为 rhs
+        std::vector<std::pair<Value*, BasicBlock*>> incoming;
+        incoming.push_back({builder->getInt1(false), lhsBB});
+        incoming.push_back({rhs, rhsEndBB});
+        
+        return builder->createPhi(TypeFactory::getInt1Type(), incoming);
     }
     return visitEqExp(ctx->eqExp());
 }
@@ -851,31 +929,56 @@ std::any SysYVisitor::visitLAndExp(SysYParser::LAndExpContext *ctx) {
 std::any SysYVisitor::visitLOrExp(SysYParser::LOrExpContext *ctx) {
     DEBUG_LOCATION_INFO
     if (ctx->lOrExp()) {
-        // 简化实现：不实现短路求值，使用逻辑或运算
+        // 短路求值实现
+        // 1. 计算左操作数
         Value* lhs = std::any_cast<Value*>(visitLOrExp(ctx->lOrExp()));
+        
+        // 类型转换转为 i1
+        if (lhs->getType()->toString() != "i1") {
+            lhs = builder->createICmpNE(lhs, builder->getInt32(0));
+        }
+        
+        // 获取当前基本块（lhs结束块）
+        BasicBlock* lhsBB = builder->getCurrentBB();
+        Function* currentFunc = builder->getCurrentFunction();
+        
+        // 创建新基本块
+        int count = currentFunc->getBasicBlocks().size();
+        BasicBlock* rhsBB = new BasicBlock("lor_rhs_" + std::to_string(count));
+        BasicBlock* mergeBB = new BasicBlock("lor_merge_" + std::to_string(count));
+        
+        // 2. 如果左操作数为真，跳转到mergeBB（结果为真）；否则跳转到rhsBB
+        // 注意：如果lhs为true，我们不需要计算rhs，直接结果为true。
+        builder->createCondBr(lhs, mergeBB, rhsBB);
+        
+        // 3. 在rhsBB中计算右操作数
+        currentFunc->addBasicBlock(rhsBB);
+        builder->setInsertPoint(rhsBB);
+        
         Value* rhs = std::any_cast<Value*>(visitLAndExp(ctx->lAndExp()));
         
-        // 如果 lhs 和 rhs 都是 i1 类型，直接使用 or 指令
-        // 否则需要转换
-        if (lhs->getType()->toString() == "i1" && rhs->getType()->toString() == "i1") {
-            // 将 i1 转换为 i32，进行逻辑或，再转换回 i1
-            Value* lhs_i32 = builder->createZExt(lhs, TypeFactory::getIntType());
-            Value* rhs_i32 = builder->createZExt(rhs, TypeFactory::getIntType());
-            Value* zero = builder->getInt32(0);
-            Value* add_result = builder->createAdd(lhs_i32, rhs_i32);
-            Value* result_ne_zero = builder->createICmpNE(add_result, zero);
-            return result_ne_zero;
-        } else {
-            // 如果类型不匹配，先转换为 i32
-            Value* zero = builder->getInt32(0);
-            Value* lhs_ne_zero = builder->createICmpNE(lhs, zero);
-            Value* rhs_ne_zero = builder->createICmpNE(rhs, zero);
-            Value* lhs_i32 = builder->createZExt(lhs_ne_zero, TypeFactory::getIntType());
-            Value* rhs_i32 = builder->createZExt(rhs_ne_zero, TypeFactory::getIntType());
-            Value* add_result = builder->createAdd(lhs_i32, rhs_i32);
-            Value* result_ne_zero = builder->createICmpNE(add_result, zero);
-            return result_ne_zero;
+        // 类型转换转为 i1
+        if (rhs->getType()->toString() != "i1") {
+            rhs = builder->createICmpNE(rhs, builder->getInt32(0));
         }
+        
+        // rhs计算完后跳转到mergeBB
+        builder->createBr(mergeBB);
+        // 获取 rhs 结束块
+        BasicBlock* rhsEndBB = builder->getCurrentBB();
+        
+        // 4. mergeBB
+        currentFunc->addBasicBlock(mergeBB);
+        builder->setInsertPoint(mergeBB);
+        
+        // 使用 PHI 节点合并结果
+        // 如果来自 lhsBB (lhs为true)，结果为 true
+        // 如果来自 rhsEndBB (lhs为false，结果同rhs)，结果为 rhs
+        std::vector<std::pair<Value*, BasicBlock*>> incoming;
+        incoming.push_back({builder->getInt1(true), lhsBB});
+        incoming.push_back({rhs, rhsEndBB});
+        
+        return builder->createPhi(TypeFactory::getInt1Type(), incoming);
     }
     return visitLAndExp(ctx->lAndExp());
 }
@@ -1178,6 +1281,40 @@ void SysYVisitor::initializeArrayConst(Value* arrayPtr, std::shared_ptr<Type> ar
     }
 }
 
+// 辅助函数：递归生成数组初始化字符串
+static std::string helperRecursiveArrayInit(const std::vector<int>& values, 
+                                          const std::vector<uint64_t>& dimensions, 
+                                          int& offset) {
+    if (dimensions.empty()) return "";
+
+    std::string elemTypeStr = "i32";
+    if (dimensions.size() > 1) {
+        elemTypeStr = "i32";
+        for (int k = dimensions.size() - 1; k >= 1; --k) {
+            elemTypeStr = "[" + std::to_string(dimensions[k]) + " x " + elemTypeStr + "]";
+        }
+    }
+    
+    std::string result = "[";
+    uint64_t count = dimensions[0];
+    
+    for (size_t i = 0; i < count; ++i) {
+        if (i > 0) result += ", ";
+        
+        result += elemTypeStr + " ";
+        
+        if (dimensions.size() == 1) {
+            result += std::to_string(values[offset]);
+            offset++;
+        } else {
+            std::vector<uint64_t> subDims(dimensions.begin() + 1, dimensions.end());
+            result += helperRecursiveArrayInit(values, subDims, offset);
+        }
+    }
+    result += "]";
+    return result;
+}
+
 // 生成全局常量数组初始化器字符串
 std::string SysYVisitor::generateGlobalArrayInitializer(SysYParser::ConstInitValContext* constInitValCtx, 
                                                          const std::vector<uint64_t>& dimensions) {
@@ -1193,49 +1330,8 @@ std::string SysYVisitor::generateGlobalArrayInitializer(SysYParser::ConstInitVal
     evaluateConstInitValToList(constInitValCtx, dimensions, values, linearIndex);
     
     // 生成初始化器字符串
-    if (dimensions.size() == 1) {
-        // 一维数组：[i32 0, i32 1, i32 2, ...]
-        std::string result = "[";
-        for (size_t i = 0; i < values.size(); ++i) {
-            if (i > 0) result += ", ";
-            result += "i32 " + std::to_string(values[i]);
-        }
-        result += "]";
-        return result;
-    } else {
-        // 多维数组：需要嵌套结构
-        // 例如：[2 x [2 x i32]] 的初始化器应该是 [[i32 0, i32 1], [i32 2, i32 3]]
-        std::string result = "[";
-        uint64_t subArraySize = std::accumulate(dimensions.begin() + 1, dimensions.end(), 1, std::multiplies<uint64_t>());
-        for (size_t i = 0; i < dimensions[0]; ++i) {
-            if (i > 0) result += ", ";
-            if (dimensions.size() == 2) {
-                // 二维数组：每个子数组是 [i32 x, i32 y, ...]
-                result += "[";
-                for (size_t j = 0; j < subArraySize; ++j) {
-                    if (j > 0) result += ", ";
-                    result += "i32 " + std::to_string(values[i * subArraySize + j]);
-                }
-                result += "]";
-            } else {
-                // 更高维数组：递归处理
-                std::vector<uint64_t> subDimensions(dimensions.begin() + 1, dimensions.end());
-                std::vector<int> subValues(subArraySize);
-                for (size_t j = 0; j < subArraySize; ++j) {
-                    subValues[j] = values[i * subArraySize + j];
-                }
-                // 简化处理：对于更高维数组，暂时使用扁平化表示
-                result += "[";
-                for (size_t j = 0; j < subArraySize; ++j) {
-                    if (j > 0) result += ", ";
-                    result += "i32 " + std::to_string(values[i * subArraySize + j]);
-                }
-                result += "]";
-            }
-        }
-        result += "]";
-        return result;
-    }
+    int offset = 0;
+    return helperRecursiveArrayInit(values, dimensions, offset);
 }
 
 std::string SysYVisitor::generateGlobalArrayInitializer(SysYParser::InitValContext* initValCtx, 
@@ -1252,49 +1348,8 @@ std::string SysYVisitor::generateGlobalArrayInitializer(SysYParser::InitValConte
     evaluateInitValToList(initValCtx, dimensions, values, linearIndex);
     
     // 生成初始化器字符串
-    if (dimensions.size() == 1) {
-        // 一维数组：[i32 0, i32 1, i32 2, ...]
-        std::string result = "[";
-        for (size_t i = 0; i < values.size(); ++i) {
-            if (i > 0) result += ", ";
-            result += "i32 " + std::to_string(values[i]);
-        }
-        result += "]";
-        return result;
-    } else {
-        // 多维数组：需要嵌套结构
-        // 例如：[2 x [2 x i32]] 的初始化器应该是 [[i32 0, i32 1], [i32 2, i32 3]]
-        std::string result = "[";
-        uint64_t subArraySize = std::accumulate(dimensions.begin() + 1, dimensions.end(), 1, std::multiplies<uint64_t>());
-        for (size_t i = 0; i < dimensions[0]; ++i) {
-            if (i > 0) result += ", ";
-            if (dimensions.size() == 2) {
-                // 二维数组：每个子数组是 [i32 x, i32 y, ...]
-                result += "[";
-                for (size_t j = 0; j < subArraySize; ++j) {
-                    if (j > 0) result += ", ";
-                    result += "i32 " + std::to_string(values[i * subArraySize + j]);
-                }
-                result += "]";
-            } else {
-                // 更高维数组：递归处理
-                std::vector<uint64_t> subDimensions(dimensions.begin() + 1, dimensions.end());
-                std::vector<int> subValues(subArraySize);
-                for (size_t j = 0; j < subArraySize; ++j) {
-                    subValues[j] = values[i * subArraySize + j];
-                }
-                // 简化处理：对于更高维数组，暂时使用扁平化表示
-                result += "[";
-                for (size_t j = 0; j < subArraySize; ++j) {
-                    if (j > 0) result += ", ";
-                    result += "i32 " + std::to_string(values[i * subArraySize + j]);
-                }
-                result += "]";
-            }
-        }
-        result += "]";
-        return result;
-    }
+    int offset = 0;
+    return helperRecursiveArrayInit(values, dimensions, offset);
 }
 
 // 将常量初始化值列表转换为值数组
@@ -1305,6 +1360,7 @@ void SysYVisitor::evaluateConstInitValToList(SysYParser::ConstInitValContext* co
     if (!constInitValCtx) return;
     
     uint64_t totalElements = std::accumulate(dimensions.begin(), dimensions.end(), 1, std::multiplies<uint64_t>());
+    int startLinearIndex = linearIndex;
     
     // 如果是标量常量表达式
     if (constInitValCtx->constExp()) {
@@ -1323,7 +1379,7 @@ void SysYVisitor::evaluateConstInitValToList(SysYParser::ConstInitValContext* co
     
     // 处理混合初始化列表
     for (auto constInitVal : constInitValCtx->constInitVal()) {
-        if (linearIndex >= static_cast<int>(totalElements)) break;
+        if (linearIndex - startLinearIndex >= static_cast<int>(totalElements)) break;
         
         if (constInitVal->constExp()) {
             // 单个值：按行优先顺序填充
@@ -1337,12 +1393,13 @@ void SysYVisitor::evaluateConstInitValToList(SysYParser::ConstInitValContext* co
                 
                 // 递归处理子数组
                 std::vector<uint64_t> subDimensions(dimensions.begin() + 1, dimensions.end());
-                int oldLinearIndex = linearIndex;
+                // int oldLinearIndex = linearIndex; // unused
                 evaluateConstInitValToList(constInitVal, subDimensions, values, linearIndex);
                 
-                // 如果 linearIndex 没有被正确更新，手动更新它
-                if (linearIndex == oldLinearIndex) {
-                    linearIndex = (subArrayIndex + 1) * subArraySize;
+                // 填充剩余部分：移动 linearIndex 到当前子数组的结束位置
+                int nextBoundary = (subArrayIndex + 1) * subArraySize;
+                if (linearIndex < nextBoundary) {
+                    linearIndex = nextBoundary;
                 }
             }
         }
@@ -1356,6 +1413,7 @@ void SysYVisitor::evaluateInitValToList(SysYParser::InitValContext* initValCtx,
     if (!initValCtx) return;
     
     uint64_t totalElements = std::accumulate(dimensions.begin(), dimensions.end(), 1, std::multiplies<uint64_t>());
+    int startLinearIndex = linearIndex;
     
     // 如果是标量常量表达式
     if (initValCtx->exp()) {
@@ -1374,11 +1432,12 @@ void SysYVisitor::evaluateInitValToList(SysYParser::InitValContext* initValCtx,
     
     // 处理混合初始化列表
     for (auto initVal : initValCtx->initVal()) {
-        if (linearIndex >= static_cast<int>(totalElements)) break;
+        if (linearIndex - startLinearIndex >= static_cast<int>(totalElements)) break;
         
         if (initVal->exp()) {
             // 单个值：按行优先顺序填充
-            values[linearIndex] = evaluateExp(initVal->exp());
+            int val = evaluateExp(initVal->exp());
+            values[linearIndex] = val;
             linearIndex++;
         } else {
             // 嵌套列表：递归处理
@@ -1388,12 +1447,13 @@ void SysYVisitor::evaluateInitValToList(SysYParser::InitValContext* initValCtx,
                 
                 // 递归处理子数组
                 std::vector<uint64_t> subDimensions(dimensions.begin() + 1, dimensions.end());
-                int oldLinearIndex = linearIndex;
+                // int oldLinearIndex = linearIndex; // unused
                 evaluateInitValToList(initVal, subDimensions, values, linearIndex);
                 
-                // 如果 linearIndex 没有被正确更新，手动更新它
-                if (linearIndex == oldLinearIndex) {
-                    linearIndex = (subArrayIndex + 1) * subArraySize;
+                // 填充剩余部分：移动 linearIndex 到当前子数组的结束位置
+                int nextBoundary = (subArrayIndex + 1) * subArraySize;
+                if (linearIndex < nextBoundary) {
+                    linearIndex = nextBoundary;
                 }
             }
         }

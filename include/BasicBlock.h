@@ -16,6 +16,10 @@ public:
         instructions.push_back(instruction);
     }
     
+    void addInstructionFront(const std::string& instruction) {
+        instructions.insert(instructions.begin(), instruction);
+    }
+    
     bool isTerminated() const {
         if (instructions.empty()) return false;
         const std::string& last = instructions.back();
